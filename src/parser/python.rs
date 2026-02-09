@@ -91,11 +91,13 @@ fn build_fn_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src: 
     let params = cap_text(m, fn_params_idx, src).unwrap_or("");
     let parent_name = find_parent_class_py(name_node, src);
     let is_method = parent_name.is_some();
+    let is_test = name.starts_with("test_") || name.starts_with("test");
     Symbol {
         name: name.clone(), kind: if is_method { SymbolKind::Method } else { SymbolKind::Function },
         line_start: fn_node.start_position().row, line_end: fn_node.end_position().row,
         parent_name, visibility: python_visibility(&name),
         signature: Some(format!("def {}", params)),
+        is_test,
     }
 }
 
@@ -151,6 +153,7 @@ fn parse_symbols(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
                     name, kind: SymbolKind::Class,
                     line_start: class_node.start_position().row, line_end: class_node.end_position().row,
                     parent_name: None, visibility: None, signature: None,
+                    is_test: false,
                 });
             }
         }

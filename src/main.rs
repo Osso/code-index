@@ -89,6 +89,25 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Find test functions that call a given symbol
+    TestedBy {
+        name: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value = "10")]
+        depth: u32,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Find functions/methods not covered by any test
+    Untested {
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Resolve an import to its target file and symbol
     ResolveImport {
         /// Import name or path to resolve
@@ -170,6 +189,15 @@ fn main() -> Result<()> {
         } => cmd_hierarchy(path.as_deref(), &name, &direction)?,
         Command::References { name, kind, path } => {
             cmd_references(path.as_deref(), &name, kind.as_deref())?;
+        }
+        Command::TestedBy {
+            name,
+            file,
+            depth,
+            path,
+        } => cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?,
+        Command::Untested { exclude, path } => {
+            cmd_untested(path.as_deref(), &exclude)?;
         }
         Command::ResolveImport { name, file, path } => {
             cmd_resolve_import(path.as_deref(), &name, file.as_deref())?;
@@ -259,6 +287,22 @@ fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<
     let db = db::Database::open(&project::resolve_db(path)?)?;
     let refs = query::find_references(&db, name, kind)?;
     let json = serde_json::to_string_pretty(&refs)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let tests = query::find_tested_by(&db, name, file, depth)?;
+    let json = serde_json::to_string_pretty(&tests)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let untested = query::find_untested(&db, None, exclude)?;
+    let json = serde_json::to_string_pretty(&untested)?;
     println!("{json}");
     Ok(())
 }

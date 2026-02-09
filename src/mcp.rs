@@ -83,6 +83,24 @@ pub struct HierarchyParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TestedByParams {
+    #[schemars(description = "Function/method name to find tests for")]
+    name: String,
+    #[schemars(description = "Filter by file path (substring match)")]
+    file: Option<String>,
+    #[schemars(description = "Max call chain depth to search (default: 10)")]
+    depth: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UntestedParams {
+    #[schemars(description = "Filter by path (substring match)")]
+    path: Option<String>,
+    #[schemars(description = "Symbol names to exclude")]
+    exclude: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ResolveImportParams {
     #[schemars(description = "Import name or path to resolve")]
     name: String,
@@ -194,6 +212,32 @@ impl CodeIndexService {
         }
     }
 
+    #[tool(description = "Find which test functions call a given symbol (directly or transitively)")]
+    async fn tested_by(&self, Parameters(p): Parameters<TestedByParams>) -> String {
+        let db = match self.open_db() {
+            Ok(db) => db,
+            Err(e) => return e,
+        };
+        let depth = p.depth.unwrap_or(10);
+        match query::find_tested_by(&db, &p.name, p.file.as_deref(), depth) {
+            Ok(tests) => format_tested_by(&tests),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(description = "Find functions/methods not covered by any test")]
+    async fn untested(&self, Parameters(p): Parameters<UntestedParams>) -> String {
+        let db = match self.open_db() {
+            Ok(db) => db,
+            Err(e) => return e,
+        };
+        let exclude = p.exclude.unwrap_or_default();
+        match query::find_untested(&db, p.path.as_deref(), &exclude) {
+            Ok(symbols) => format_untested(&symbols),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
     #[tool(description = "Find functions/methods that are never called (dead code)")]
     async fn dead_code(&self, Parameters(p): Parameters<DeadCodeParams>) -> String {
         let db = match self.open_db() {
@@ -281,6 +325,30 @@ fn format_resolved_imports(imports: &[crate::model::ResolvedImport]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn format_tested_by(tests: &[crate::model::StoredSymbol]) -> String {
+    if tests.is_empty() {
+        return "No tests found for this symbol.".to_string();
+    }
+    let header = format!("{} test(s) found:\n", tests.len());
+    let lines: Vec<String> = tests
+        .iter()
+        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .collect();
+    header + &lines.join("\n")
+}
+
+fn format_untested(symbols: &[crate::model::StoredSymbol]) -> String {
+    if symbols.is_empty() {
+        return "All functions/methods are tested.".to_string();
+    }
+    let header = format!("{} untested functions/methods:\n", symbols.len());
+    let lines: Vec<String> = symbols
+        .iter()
+        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .collect();
+    header + &lines.join("\n")
 }
 
 fn format_dead_code(symbols: &[crate::model::StoredSymbol]) -> String {

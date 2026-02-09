@@ -155,6 +155,7 @@ fn build_fn_symbol(
     let parent_name = find_parent_impl_type(name_node, src);
     let vis = extract_visibility(fn_node.unwrap_or(name_node), src);
 
+    let is_test = fn_node.map_or(false, |n| has_test_attribute(n, src));
     Symbol {
         name,
         kind: if is_method { SymbolKind::Method } else { SymbolKind::Function },
@@ -163,6 +164,7 @@ fn build_fn_symbol(
         parent_name,
         visibility: vis,
         signature: Some(format!("fn {}", params)),
+        is_test,
     }
 }
 
@@ -183,7 +185,27 @@ fn build_type_sym(
         parent_name: None,
         visibility: extract_visibility(container, src),
         signature: None,
+        is_test: false,
     }
+}
+
+/// Check if a function_item node has a #[test] or #[tokio::test] attribute
+fn has_test_attribute(node: tree_sitter::Node, src: &[u8]) -> bool {
+    let mut sibling = node.prev_sibling();
+    while let Some(sib) = sibling {
+        if sib.kind() == "attribute_item" {
+            let text = node_text(sib, src);
+            if text.contains("test") {
+                return true;
+            }
+        }
+        // Skip comments between attribute and function
+        if sib.kind() != "attribute_item" && sib.kind() != "line_comment" {
+            break;
+        }
+        sibling = sib.prev_sibling();
+    }
+    false
 }
 
 fn parse_calls(

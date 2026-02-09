@@ -445,6 +445,107 @@ fn resolve_import_target(
     Ok(candidates.into_iter().next())
 }
 
+/// Find test functions that transitively call a given symbol.
+pub fn find_tested_by(
+    db: &Database,
+    name: &str,
+    file: Option<&str>,
+    depth: u32,
+) -> Result<Vec<StoredSymbol>> {
+    // Get all callers transitively
+    let callers = find_callers(db, name, file, depth)?;
+
+    // Filter to only test symbols
+    let conn = db.conn();
+    let mut tests = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for caller in &callers {
+        if seen.contains(&caller.symbol_name) {
+            continue;
+        }
+        seen.insert(caller.symbol_name.clone());
+
+        let mut stmt = conn.prepare(
+            "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.is_test = 1",
+        )?;
+        let rows = stmt
+            .query_map(params![caller.symbol_name], map_stored_symbol)?
+            .collect::<Result<Vec<_>, _>>()?;
+        tests.extend(rows);
+    }
+
+    // Also check if the symbol itself is a test
+    let mut stmt = conn.prepare(
+        "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+         FROM symbols s JOIN files f ON s.file_id = f.id
+         WHERE s.name = ?1 AND s.is_test = 1",
+    )?;
+    let self_tests = stmt
+        .query_map(params![name], map_stored_symbol)?
+        .collect::<Result<Vec<_>, _>>()?;
+    tests.extend(self_tests);
+
+    Ok(tests)
+}
+
+/// Find functions/methods not called by any test (transitively).
+pub fn find_untested(
+    db: &Database,
+    path: Option<&str>,
+    exclude: &[String],
+) -> Result<Vec<StoredSymbol>> {
+    let conn = db.conn();
+
+    // Get all non-test functions/methods
+    let mut sql = String::from(
+        "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+         FROM symbols s
+         JOIN files f ON s.file_id = f.id
+         WHERE s.kind IN ('function', 'method')
+         AND s.is_test = 0
+         AND s.name NOT IN ('main', 'new', '__init__', '__construct')",
+    );
+
+    if path.is_some() {
+        sql.push_str(" AND f.path LIKE '%' || ?1 || '%'");
+    }
+
+    for (i, _) in exclude.iter().enumerate() {
+        let param_idx = if path.is_some() { i + 2 } else { i + 1 };
+        sql.push_str(&format!(" AND s.name != ?{}", param_idx));
+    }
+
+    sql.push_str(" ORDER BY f.path, s.line_start");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut dyn_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(p) = path {
+        dyn_params.push(Box::new(p.to_string()));
+    }
+    for ex in exclude {
+        dyn_params.push(Box::new(ex.clone()));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = dyn_params.iter().map(|p| p.as_ref()).collect();
+
+    let candidates: Vec<StoredSymbol> = stmt
+        .query_map(param_refs.as_slice(), map_stored_symbol)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // For each candidate, check if any test calls it (transitively)
+    let mut untested = Vec::new();
+    for sym in candidates {
+        let tests = find_tested_by(db, &sym.name, None, 10)?;
+        if tests.is_empty() {
+            untested.push(sym);
+        }
+    }
+
+    Ok(untested)
+}
+
 /// Find class/trait hierarchy (ancestors, descendants, or both).
 pub fn find_hierarchy(
     db: &Database,

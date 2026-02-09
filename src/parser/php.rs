@@ -124,6 +124,7 @@ fn build_fn_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src: 
         name, kind: SymbolKind::Function,
         line_start: container.start_position().row, line_end: container.end_position().row,
         parent_name: None, visibility: None, signature: Some(format!("function {}", params)),
+        is_test: false,
     }
 }
 
@@ -131,12 +132,15 @@ fn build_method_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, s
     let name = node_text(name_node, src).to_string();
     let container = cap_node(m, node_idx).unwrap_or(name_node);
     let params = cap_text(m, params_idx, src).unwrap_or("");
+    let parent = find_parent_class(name_node, src);
+    let is_test = is_php_test(&name, parent.as_deref());
     Symbol {
         name, kind: SymbolKind::Method,
         line_start: container.start_position().row, line_end: container.end_position().row,
-        parent_name: find_parent_class(name_node, src),
+        parent_name: parent,
         visibility: extract_php_visibility(container, src),
         signature: Some(format!("function {}", params)),
+        is_test,
     }
 }
 
@@ -147,6 +151,18 @@ fn build_type_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src
         name, kind,
         line_start: container.start_position().row, line_end: container.end_position().row,
         parent_name: None, visibility: None, signature: None,
+        is_test: false,
+    }
+}
+
+/// PHPUnit: testFoo(), Codeception: class FooCest / FooTest with test* methods
+fn is_php_test(method_name: &str, parent_class: Option<&str>) -> bool {
+    if !method_name.starts_with("test") {
+        return false;
+    }
+    match parent_class {
+        Some(cls) => cls.ends_with("Test") || cls.ends_with("Cest"),
+        None => false,
     }
 }
 

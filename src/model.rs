@@ -109,6 +109,7 @@ pub struct Symbol {
     pub parent_name: Option<String>,
     pub visibility: Option<String>,
     pub signature: Option<String>,
+    pub is_test: bool,
 }
 
 /// A parsed reference (call, inheritance, import usage)

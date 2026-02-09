@@ -126,6 +126,7 @@ fn build_fn_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], 
         line_start: fn_node.start_position().row, line_end: fn_node.end_position().row,
         parent_name: None, visibility: extract_ts_export(fn_node),
         signature: Some(format!("function {}", params)),
+        is_test: false,
     }
 }
 
@@ -136,6 +137,7 @@ fn build_class_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8
         name, kind: SymbolKind::Class,
         line_start: container.start_position().row, line_end: container.end_position().row,
         parent_name: None, visibility: vis, signature: None,
+        is_test: false,
     }
 }
 
@@ -149,6 +151,7 @@ fn build_method_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u
         parent_name: find_parent_class_ts(nn, src),
         visibility: extract_method_vis(method_node, src),
         signature: Some(format!("method {}", params)),
+        is_test: false,
     }
 }
 
@@ -159,6 +162,7 @@ fn build_type_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8]
         name, kind,
         line_start: container.start_position().row, line_end: container.end_position().row,
         parent_name: None, visibility: extract_ts_export(container), signature: None,
+        is_test: false,
     }
 }
 
@@ -228,6 +232,7 @@ fn build_arrow_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8
         line_start: fn_node.start_position().row, line_end: fn_node.end_position().row,
         parent_name: None, visibility: None,
         signature: Some(format!("{} {}", prefix, params)),
+        is_test: false,
     }
 }
 

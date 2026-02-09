@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end INTEGER NOT NULL,
     parent_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
     visibility TEXT,
-    signature TEXT
+    signature TEXT,
+    is_test INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS refs (
@@ -83,6 +84,10 @@ impl Database {
         self.conn
             .execute_batch(SCHEMA)
             .context("Failed to run migrations")?;
+        // Add is_test column if missing (existing DBs)
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0",
+        );
         Ok(())
     }
 
@@ -150,8 +155,8 @@ impl Database {
         parent_id: Option<i64>,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO symbols (file_id, name, kind, line_start, line_end, parent_id, visibility, signature)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO symbols (file_id, name, kind, line_start, line_end, parent_id, visibility, signature, is_test)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 file_id,
                 symbol.name,
@@ -161,6 +166,7 @@ impl Database {
                 parent_id,
                 symbol.visibility,
                 symbol.signature,
+                symbol.is_test as i64,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -284,6 +290,7 @@ mod tests {
             parent_name: None,
             visibility: Some("pub".to_string()),
             signature: Some("fn main()".to_string()),
+            is_test: false,
         };
         let sym_id = db.insert_symbol(file_id, &sym, None).unwrap();
 
@@ -314,6 +321,7 @@ mod tests {
             parent_name: None,
             visibility: None,
             signature: None,
+            is_test: false,
         };
         db.insert_symbol(file_id, &sym, None).unwrap();
         db.clear_file_data(file_id).unwrap();
