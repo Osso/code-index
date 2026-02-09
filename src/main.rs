@@ -1,0 +1,308 @@
+mod config;
+mod db;
+mod indexer;
+mod mcp;
+mod model;
+mod parser;
+mod project;
+mod query;
+mod resolver;
+mod watcher;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "code-index", about = "Structural code analysis MCP server")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Start MCP server (stdio)
+    Serve,
+    /// Index a directory
+    Index {
+        /// Directory to index (default: current directory)
+        path: Option<String>,
+        #[arg(long)]
+        full: bool,
+    },
+    /// Find symbol definitions
+    Symbol {
+        name: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show who calls a function/method
+    Callers {
+        name: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value = "1")]
+        depth: u32,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show what a function calls
+    Callees {
+        name: String,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value = "1")]
+        depth: u32,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Find functions never called
+    DeadCode {
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Show class/trait inheritance tree
+    Hierarchy {
+        name: String,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Find all structural references to a symbol
+    References {
+        name: String,
+        #[arg(long)]
+        kind: Option<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Watch directory and re-index on changes
+    Watch {
+        /// Directory to watch (default: current directory)
+        path: Option<String>,
+    },
+    /// Show index status
+    Status {
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Manage registered projects
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Register a project
+    Add {
+        name: String,
+        /// Directory path (default: current directory)
+        path: Option<String>,
+    },
+    /// Unregister a project
+    Remove { name: String },
+    /// List registered projects
+    List,
+}
+
+fn main() -> Result<()> {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .init();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Serve => run_mcp_server()?,
+        Command::Index { path, full } => cmd_index(path.as_deref(), full)?,
+        Command::Symbol {
+            name,
+            kind,
+            file,
+            path,
+        } => cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?,
+        Command::Callers {
+            name,
+            file,
+            depth,
+            path,
+        } => cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?,
+        Command::Callees {
+            name,
+            file,
+            depth,
+            path,
+        } => cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?,
+        Command::DeadCode { exclude, path } => {
+            cmd_dead_code(path.as_deref(), &exclude)?;
+        }
+        Command::Hierarchy {
+            name,
+            direction,
+            path,
+        } => cmd_hierarchy(path.as_deref(), &name, &direction)?,
+        Command::References { name, kind, path } => {
+            cmd_references(path.as_deref(), &name, kind.as_deref())?;
+        }
+        Command::Watch { path } => cmd_watch(path.as_deref())?,
+        Command::Status { path } => cmd_status(path.as_deref())?,
+        Command::Project { action } => cmd_project(action)?,
+    }
+
+    Ok(())
+}
+
+fn run_mcp_server() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        use rmcp::ServiceExt;
+        let service = mcp::CodeIndexService::new();
+        let transport = rmcp::transport::io::stdio();
+        let server = service.serve(transport).await?;
+        server.waiting().await?;
+        Ok(())
+    })
+}
+
+fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
+    let project_dir = project::resolve_project_dir(path)
+        .or_else(|_| {
+            // For index, if no project found, use the explicit path or CWD
+            let p = path.unwrap_or(".");
+            std::path::Path::new(p)
+                .canonicalize()
+                .map_err(anyhow::Error::from)
+        })?;
+    let db_path = project::db_path(&project_dir);
+    let dir_str = project_dir.to_string_lossy();
+    let db = db::Database::open(&db_path)?;
+    let stats = indexer::index_directory(&db, &dir_str, full)?;
+    println!("{stats}");
+    let resolve = resolver::resolve_references(&db)?;
+    println!("{resolve}");
+    Ok(())
+}
+
+fn cmd_symbol(path: Option<&str>, name: &str, kind: Option<&str>, file: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let symbols = query::find_symbols(&db, name, kind, file)?;
+    let json = serde_json::to_string_pretty(&symbols)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_callers(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let callers = query::find_callers(&db, name, file, depth)?;
+    let json = serde_json::to_string_pretty(&callers)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_callees(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let callees = query::find_callees(&db, name, file, depth)?;
+    let json = serde_json::to_string_pretty(&callees)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_dead_code(path: Option<&str>, exclude: &[String]) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let dead = query::find_dead_code(&db, None, exclude)?;
+    let json = serde_json::to_string_pretty(&dead)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_hierarchy(path: Option<&str>, name: &str, direction: &str) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let entries = query::find_hierarchy(&db, name, direction)?;
+    let json = serde_json::to_string_pretty(&entries)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let refs = query::find_references(&db, name, kind)?;
+    let json = serde_json::to_string_pretty(&refs)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_watch(path: Option<&str>) -> Result<()> {
+    let project_dir = project::resolve_project_dir(path)
+        .or_else(|_| {
+            let p = path.unwrap_or(".");
+            std::path::Path::new(p)
+                .canonicalize()
+                .map_err(anyhow::Error::from)
+        })?;
+    let db_path = project::db_path(&project_dir);
+    let dir_str = project_dir.to_string_lossy();
+    watcher::watch(&db_path, &dir_str)
+}
+
+fn cmd_status(path: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (files, symbols, refs) = db.get_stats()?;
+    println!("Files: {files}, Symbols: {symbols}, References: {refs}");
+    Ok(())
+}
+
+fn cmd_project(action: ProjectAction) -> Result<()> {
+    match action {
+        ProjectAction::Add { name, path } => {
+            let dir = match path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::env::current_dir()?,
+            };
+            config::add_project(&name, &dir)?;
+            println!("Registered project '{}' at {}", name, dir.display());
+        }
+        ProjectAction::Remove { name } => {
+            if config::remove_project(&name)? {
+                println!("Removed project '{name}'");
+            } else {
+                println!("Project '{name}' not found");
+            }
+        }
+        ProjectAction::List => {
+            let config = config::load()?;
+            if config.projects.is_empty() {
+                println!("No projects registered.");
+            } else {
+                for (name, entry) in &config.projects {
+                    let db_file = std::path::Path::new(&entry.path).join(".code-index.db");
+                    let status = if db_file.exists() {
+                        "indexed"
+                    } else {
+                        "not indexed"
+                    };
+                    println!("{name}: {} ({status})", entry.path);
+                }
+            }
+        }
+    }
+    Ok(())
+}
