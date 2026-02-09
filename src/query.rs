@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 
 use crate::db::Database;
-use crate::model::{CallInfo, HierarchyEntry, StoredReference, StoredSymbol};
+use crate::model::{CallInfo, HierarchyEntry, ResolvedImport, StoredReference, StoredSymbol};
 
 /// Find symbol definitions by name, optionally filtered by kind and file.
 pub fn find_symbols(
@@ -315,6 +315,134 @@ fn map_stored_reference(row: &rusqlite::Row) -> rusqlite::Result<StoredReference
         target_file: row.get(7)?,
         target_symbol: row.get(8)?,
     })
+}
+
+/// Resolve an import: given a name or path, find where it comes from.
+pub fn resolve_import(
+    db: &Database,
+    name: &str,
+    file: Option<&str>,
+) -> Result<Vec<ResolvedImport>> {
+    let conn = db.conn();
+
+    let imports = query_imports(conn, name, file)?;
+
+    let mut results = Vec::new();
+    for (source_file, local_name, full_path, alias, line) in imports {
+        let target = resolve_import_target(db, &local_name, &full_path)?;
+        results.push(ResolvedImport {
+            source_file,
+            local_name,
+            full_path,
+            alias,
+            line,
+            target_file: target.as_ref().map(|t| t.0.clone()),
+            target_symbol: target.as_ref().map(|t| t.1.clone()),
+            target_kind: target.as_ref().map(|t| t.2.clone()),
+            target_line: target.as_ref().map(|t| t.3),
+        });
+    }
+
+    Ok(results)
+}
+
+fn query_imports(
+    conn: &rusqlite::Connection,
+    name: &str,
+    file: Option<&str>,
+) -> Result<Vec<(String, String, String, Option<String>, i64)>> {
+    let sql = if file.is_some() {
+        "SELECT f.path, i.local_name, i.full_path, i.alias, i.line
+         FROM imports i
+         JOIN files f ON i.file_id = f.id
+         WHERE (i.local_name = ?1 OR i.full_path LIKE '%' || ?1 || '%')
+         AND f.path LIKE '%' || ?2 || '%'
+         ORDER BY f.path, i.line"
+    } else {
+        "SELECT f.path, i.local_name, i.full_path, i.alias, i.line
+         FROM imports i
+         JOIN files f ON i.file_id = f.id
+         WHERE i.local_name = ?1 OR i.full_path LIKE '%' || ?1 || '%'
+         ORDER BY f.path, i.line"
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<_> {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+    };
+
+    let rows = if let Some(f) = file {
+        stmt.query_map(params![name, f], map_row)?
+    } else {
+        stmt.query_map(params![name], map_row)?
+    };
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query imports")
+}
+
+fn resolve_import_target(
+    db: &Database,
+    local_name: &str,
+    full_path: &str,
+) -> Result<Option<(String, String, String, i64)>> {
+    let conn = db.conn();
+
+    // Extract the actual symbol name from the full path
+    let actual_name = full_path
+        .rsplit(&['\\', '.', ':', '/'][..])
+        .next()
+        .unwrap_or(full_path);
+
+    // Try to find the symbol by name, preferring files that match the import path
+    let mut stmt = conn.prepare(
+        "SELECT f.path, s.name, s.kind, s.line_start
+         FROM symbols s
+         JOIN files f ON s.file_id = f.id
+         WHERE s.name = ?1
+         ORDER BY f.path",
+    )?;
+
+    let candidates: Vec<(String, String, String, i64)> = stmt
+        .query_map(params![actual_name], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if candidates.is_empty() {
+        // Try with local_name if different from actual_name
+        if local_name != actual_name {
+            let mut stmt2 = conn.prepare(
+                "SELECT f.path, s.name, s.kind, s.line_start
+                 FROM symbols s
+                 JOIN files f ON s.file_id = f.id
+                 WHERE s.name = ?1
+                 ORDER BY f.path",
+            )?;
+            let c2: Vec<(String, String, String, i64)> = stmt2
+                .query_map(params![local_name], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(c2.into_iter().next());
+        }
+        return Ok(None);
+    }
+
+    if candidates.len() == 1 {
+        return Ok(Some(candidates.into_iter().next().unwrap()));
+    }
+
+    // Multiple candidates — prefer one whose file path matches the import path
+    let path_parts: Vec<&str> = full_path.split(&['\\', '.', ':', '/'][..]).collect();
+    for candidate in &candidates {
+        let file_lower = candidate.0.to_lowercase();
+        if path_parts.iter().all(|p| file_lower.contains(&p.to_lowercase())) {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+
+    // Return the first candidate as fallback
+    Ok(candidates.into_iter().next())
 }
 
 /// Find class/trait hierarchy (ancestors, descendants, or both).

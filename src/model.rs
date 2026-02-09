@@ -194,3 +194,26 @@ pub struct HierarchyEntry {
     pub relation: String,
     pub depth: i32,
 }
+
+/// Resolved import: maps an import path to its target file and symbol
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedImport {
+    /// File containing the import statement
+    pub source_file: String,
+    /// Local name used in the importing file
+    pub local_name: String,
+    /// Full import path as written
+    pub full_path: String,
+    /// Alias if any
+    pub alias: Option<String>,
+    /// Line of the import statement
+    pub line: i64,
+    /// Resolved target file path (if found)
+    pub target_file: Option<String>,
+    /// Resolved target symbol name (if found)
+    pub target_symbol: Option<String>,
+    /// Resolved target symbol kind (if found)
+    pub target_kind: Option<String>,
+    /// Resolved target line (if found)
+    pub target_line: Option<i64>,
+}

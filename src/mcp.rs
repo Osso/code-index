@@ -83,6 +83,14 @@ pub struct HierarchyParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveImportParams {
+    #[schemars(description = "Import name or path to resolve")]
+    name: String,
+    #[schemars(description = "Filter by source file path (substring match)")]
+    file: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeadCodeParams {
     #[schemars(description = "Scope to directory path (substring match)")]
     path: Option<String>,
@@ -174,6 +182,18 @@ impl CodeIndexService {
         }
     }
 
+    #[tool(description = "Resolve an import path to its target file and symbol definition")]
+    async fn resolve_import(&self, Parameters(p): Parameters<ResolveImportParams>) -> String {
+        let db = match self.open_db() {
+            Ok(db) => db,
+            Err(e) => return e,
+        };
+        match query::resolve_import(&db, &p.name, p.file.as_deref()) {
+            Ok(imports) => format_resolved_imports(&imports),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
     #[tool(description = "Find functions/methods that are never called (dead code)")]
     async fn dead_code(&self, Parameters(p): Parameters<DeadCodeParams>) -> String {
         let db = match self.open_db() {
@@ -240,6 +260,24 @@ fn format_hierarchy(entries: &[crate::model::HierarchyEntry]) -> String {
         .map(|e| {
             let indent = "  ".repeat(e.depth as usize);
             format!("{}{} ({}) in {} | {}", indent, e.name, e.kind, e.file_path, e.relation)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_resolved_imports(imports: &[crate::model::ResolvedImport]) -> String {
+    if imports.is_empty() {
+        return "No imports found.".to_string();
+    }
+    imports
+        .iter()
+        .map(|i| {
+            let target = match (&i.target_file, &i.target_symbol, &i.target_line) {
+                (Some(f), Some(s), Some(l)) => format!(" → {} {} in {}:{}", i.target_kind.as_deref().unwrap_or("?"), s, f, l),
+                _ => " → [unresolved]".to_string(),
+            };
+            let alias = i.alias.as_ref().map(|a| format!(" as {a}")).unwrap_or_default();
+            format!("{}:{} {} ({}){}{}", i.source_file, i.line, i.local_name, i.full_path, alias, target)
         })
         .collect::<Vec<_>>()
         .join("\n")

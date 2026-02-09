@@ -89,6 +89,16 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Resolve an import to its target file and symbol
+    ResolveImport {
+        /// Import name or path to resolve
+        name: String,
+        #[arg(long)]
+        file: Option<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Watch directory and re-index on changes
     Watch {
         /// Directory to watch (default: current directory)
@@ -160,6 +170,9 @@ fn main() -> Result<()> {
         } => cmd_hierarchy(path.as_deref(), &name, &direction)?,
         Command::References { name, kind, path } => {
             cmd_references(path.as_deref(), &name, kind.as_deref())?;
+        }
+        Command::ResolveImport { name, file, path } => {
+            cmd_resolve_import(path.as_deref(), &name, file.as_deref())?;
         }
         Command::Watch { path } => cmd_watch(path.as_deref())?,
         Command::Status { path } => cmd_status(path.as_deref())?,
@@ -246,6 +259,14 @@ fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<
     let db = db::Database::open(&project::resolve_db(path)?)?;
     let refs = query::find_references(&db, name, kind)?;
     let json = serde_json::to_string_pretty(&refs)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let imports = query::resolve_import(&db, name, file)?;
+    let json = serde_json::to_string_pretty(&imports)?;
     println!("{json}");
     Ok(())
 }
