@@ -196,6 +196,21 @@ pub struct HierarchyEntry {
     pub depth: i32,
 }
 
+/// A file that imports a given module/symbol
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportedByEntry {
+    /// File containing the import statement
+    pub file_path: String,
+    /// Local name used in the importing file
+    pub local_name: String,
+    /// Full import path as written
+    pub full_path: String,
+    /// Alias if any
+    pub alias: Option<String>,
+    /// Line of the import statement
+    pub line: i64,
+}
+
 /// Resolved import: maps an import path to its target file and symbol
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedImport {

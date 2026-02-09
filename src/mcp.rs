@@ -109,6 +109,14 @@ pub struct ResolveImportParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportedByParams {
+    #[schemars(description = "Module path or symbol name to find importers of (substring match on import path)")]
+    name: String,
+    #[schemars(description = "Filter by importing file path (substring match)")]
+    file: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeadCodeParams {
     #[schemars(description = "Scope to directory path (substring match)")]
     path: Option<String>,
@@ -238,6 +246,18 @@ impl CodeIndexService {
         }
     }
 
+    #[tool(description = "Find files that import a given module/symbol (reverse dependency lookup)")]
+    async fn imported_by(&self, Parameters(p): Parameters<ImportedByParams>) -> String {
+        let db = match self.open_db() {
+            Ok(db) => db,
+            Err(e) => return e,
+        };
+        match query::find_imported_by(&db, &p.name, p.file.as_deref()) {
+            Ok(entries) => format_imported_by(&entries),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
     #[tool(description = "Find functions/methods that are never called (dead code)")]
     async fn dead_code(&self, Parameters(p): Parameters<DeadCodeParams>) -> String {
         let db = match self.open_db() {
@@ -347,6 +367,21 @@ fn format_untested(symbols: &[crate::model::StoredSymbol]) -> String {
     let lines: Vec<String> = symbols
         .iter()
         .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .collect();
+    header + &lines.join("\n")
+}
+
+fn format_imported_by(entries: &[crate::model::ImportedByEntry]) -> String {
+    if entries.is_empty() {
+        return "No importers found.".to_string();
+    }
+    let header = format!("{} importer(s) found:\n", entries.len());
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let alias = e.alias.as_ref().map(|a| format!(" as {a}")).unwrap_or_default();
+            format!("  {}:{} {} ({}){}", e.file_path, e.line, e.local_name, e.full_path, alias)
+        })
         .collect();
     header + &lines.join("\n")
 }

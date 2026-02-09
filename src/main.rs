@@ -108,6 +108,15 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Find files that import a given module/symbol
+    ImportedBy {
+        name: String,
+        #[arg(long)]
+        file: Option<String>,
+        /// Project path override
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Resolve an import to its target file and symbol
     ResolveImport {
         /// Import name or path to resolve
@@ -157,47 +166,35 @@ fn main() -> Result<()> {
     .init();
 
     let cli = Cli::parse();
+    dispatch(cli.command)
+}
 
-    match cli.command {
+fn dispatch(command: Command) -> Result<()> {
+    match command {
         Command::Serve => run_mcp_server()?,
         Command::Index { path, full } => cmd_index(path.as_deref(), full)?,
-        Command::Symbol {
-            name,
-            kind,
-            file,
-            path,
-        } => cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?,
-        Command::Callers {
-            name,
-            file,
-            depth,
-            path,
-        } => cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?,
-        Command::Callees {
-            name,
-            file,
-            depth,
-            path,
-        } => cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?,
-        Command::DeadCode { exclude, path } => {
-            cmd_dead_code(path.as_deref(), &exclude)?;
+        Command::Symbol { name, kind, file, path } => {
+            cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?;
         }
-        Command::Hierarchy {
-            name,
-            direction,
-            path,
-        } => cmd_hierarchy(path.as_deref(), &name, &direction)?,
+        Command::Callers { name, file, depth, path } => {
+            cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?;
+        }
+        Command::Callees { name, file, depth, path } => {
+            cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?;
+        }
+        Command::DeadCode { exclude, path } => cmd_dead_code(path.as_deref(), &exclude)?,
+        Command::Hierarchy { name, direction, path } => {
+            cmd_hierarchy(path.as_deref(), &name, &direction)?;
+        }
         Command::References { name, kind, path } => {
             cmd_references(path.as_deref(), &name, kind.as_deref())?;
         }
-        Command::TestedBy {
-            name,
-            file,
-            depth,
-            path,
-        } => cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?,
-        Command::Untested { exclude, path } => {
-            cmd_untested(path.as_deref(), &exclude)?;
+        Command::TestedBy { name, file, depth, path } => {
+            cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?;
+        }
+        Command::Untested { exclude, path } => cmd_untested(path.as_deref(), &exclude)?,
+        Command::ImportedBy { name, file, path } => {
+            cmd_imported_by(path.as_deref(), &name, file.as_deref())?;
         }
         Command::ResolveImport { name, file, path } => {
             cmd_resolve_import(path.as_deref(), &name, file.as_deref())?;
@@ -206,7 +203,6 @@ fn main() -> Result<()> {
         Command::Status { path } => cmd_status(path.as_deref())?,
         Command::Project { action } => cmd_project(action)?,
     }
-
     Ok(())
 }
 
@@ -303,6 +299,14 @@ fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
     let db = db::Database::open(&project::resolve_db(path)?)?;
     let untested = query::find_untested(&db, None, exclude)?;
     let json = serde_json::to_string_pretty(&untested)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn cmd_imported_by(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let entries = query::find_imported_by(&db, name, file)?;
+    let json = serde_json::to_string_pretty(&entries)?;
     println!("{json}");
     Ok(())
 }

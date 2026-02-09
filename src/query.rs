@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 
 use crate::db::Database;
-use crate::model::{CallInfo, HierarchyEntry, ResolvedImport, StoredReference, StoredSymbol};
+use crate::model::{CallInfo, HierarchyEntry, ImportedByEntry, ResolvedImport, StoredReference, StoredSymbol};
 
 /// Find symbol definitions by name, optionally filtered by kind and file.
 pub fn find_symbols(
@@ -544,6 +544,49 @@ pub fn find_untested(
     }
 
     Ok(untested)
+}
+
+/// Find files that import a given module/symbol (reverse dependency lookup).
+pub fn find_imported_by(
+    db: &Database,
+    name: &str,
+    file: Option<&str>,
+) -> Result<Vec<ImportedByEntry>> {
+    let conn = db.conn();
+
+    let sql = if file.is_some() {
+        "SELECT f.path, i.local_name, i.full_path, i.alias, i.line
+         FROM imports i
+         JOIN files f ON i.file_id = f.id
+         WHERE i.full_path LIKE '%' || ?1 || '%'
+         AND f.path LIKE '%' || ?2 || '%'
+         ORDER BY f.path, i.line"
+    } else {
+        "SELECT f.path, i.local_name, i.full_path, i.alias, i.line
+         FROM imports i
+         JOIN files f ON i.file_id = f.id
+         WHERE i.full_path LIKE '%' || ?1 || '%'
+         ORDER BY f.path, i.line"
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let rows = if let Some(f) = file {
+        stmt.query_map(params![name, f], map_imported_by)?
+    } else {
+        stmt.query_map(params![name], map_imported_by)?
+    };
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query imported-by")
+}
+
+fn map_imported_by(row: &rusqlite::Row) -> rusqlite::Result<ImportedByEntry> {
+    Ok(ImportedByEntry {
+        file_path: row.get(0)?,
+        local_name: row.get(1)?,
+        full_path: row.get(2)?,
+        alias: row.get(3)?,
+        line: row.get(4)?,
+    })
 }
 
 /// Find class/trait hierarchy (ancestors, descendants, or both).
