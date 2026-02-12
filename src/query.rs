@@ -497,9 +497,70 @@ pub fn find_untested(
     path: Option<&str>,
     exclude: &[String],
 ) -> Result<Vec<StoredSymbol>> {
+    let reachable = build_test_reachable(db)?;
+    let candidates = query_untested_candidates(db, path, exclude)?;
+    let untested = candidates
+        .into_iter()
+        .filter(|sym| !reachable.contains(&sym.name))
+        .collect();
+    Ok(untested)
+}
+
+/// Build set of all symbol names reachable from test functions via call edges.
+fn build_test_reachable(db: &Database) -> Result<std::collections::HashSet<String>> {
     let conn = db.conn();
 
-    // Get all non-test functions/methods
+    // Load call graph as adjacency list: caller_name -> [callee_names]
+    let mut adj: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.name, r.target_name
+         FROM refs r
+         JOIN symbols s ON r.source_symbol_id = s.id
+         WHERE r.kind = 'call'",
+    )?;
+    let edges = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for edge in edges {
+        let (caller, callee) = edge?;
+        adj.entry(caller).or_default().push(callee);
+    }
+
+    // Get all test function names as BFS seeds
+    let mut seeds: Vec<String> = Vec::new();
+    let mut stmt = conn.prepare("SELECT name FROM symbols WHERE is_test = 1")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        seeds.push(row?);
+    }
+
+    // BFS from test functions through callees
+    let mut reachable = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    for seed in &seeds {
+        reachable.insert(seed.clone());
+        queue.push_back(seed.clone());
+    }
+    while let Some(name) = queue.pop_front() {
+        if let Some(callees) = adj.get(&name) {
+            for callee in callees {
+                if reachable.insert(callee.clone()) {
+                    queue.push_back(callee.clone());
+                }
+            }
+        }
+    }
+
+    Ok(reachable)
+}
+
+fn query_untested_candidates(
+    db: &Database,
+    path: Option<&str>,
+    exclude: &[String],
+) -> Result<Vec<StoredSymbol>> {
+    let conn = db.conn();
+
     let mut sql = String::from(
         "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
          FROM symbols s
@@ -528,22 +589,13 @@ pub fn find_untested(
     for ex in exclude {
         dyn_params.push(Box::new(ex.clone()));
     }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = dyn_params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        dyn_params.iter().map(|p| p.as_ref()).collect();
 
     let candidates: Vec<StoredSymbol> = stmt
         .query_map(param_refs.as_slice(), map_stored_symbol)?
         .collect::<Result<Vec<_>, _>>()?;
-
-    // For each candidate, check if any test calls it (transitively)
-    let mut untested = Vec::new();
-    for sym in candidates {
-        let tests = find_tested_by(db, &sym.name, None, 10)?;
-        if tests.is_empty() {
-            untested.push(sym);
-        }
-    }
-
-    Ok(untested)
+    Ok(candidates)
 }
 
 /// Find files that import a given module/symbol (reverse dependency lookup).
