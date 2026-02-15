@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::model::{Import, Reference, Symbol};
 
@@ -85,9 +85,9 @@ impl Database {
             .execute_batch(SCHEMA)
             .context("Failed to run migrations")?;
         // Add is_test column if missing (existing DBs)
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0",
-        );
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0");
         Ok(())
     }
 
@@ -109,18 +109,14 @@ impl Database {
             params![path, hash, lang, now],
         )?;
 
-        let file_id = self.conn.last_insert_rowid();
-        // If ON CONFLICT updated, last_insert_rowid returns 0 — query for actual ID
-        if file_id == 0 {
-            let id: i64 = self.conn.query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![path],
-                |row| row.get(0),
-            )?;
-            Ok(id)
-        } else {
-            Ok(file_id)
-        }
+        // Do not use last_insert_rowid() here: on ON CONFLICT DO UPDATE it may retain
+        // an unrelated previous insert rowid instead of the file row id.
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
+        Ok(id)
     }
 
     /// Get file hash to check if re-indexing is needed
@@ -275,6 +271,29 @@ mod tests {
 
         let hash = db.get_file_hash("/test.rs").unwrap().unwrap();
         assert_eq!(hash, "def456");
+    }
+
+    #[test]
+    fn test_upsert_file_after_other_inserts_returns_correct_id() {
+        let db = Database::open_in_memory().unwrap();
+
+        let file_id = db.upsert_file("/test.rs", "abc123", "rust").unwrap();
+        let other_file_id = db.upsert_file("/other.rs", "other", "rust").unwrap();
+
+        let sym = Symbol {
+            name: "main".to_string(),
+            kind: SymbolKind::Function,
+            line_start: 1,
+            line_end: 1,
+            parent_name: None,
+            visibility: None,
+            signature: None,
+            is_test: false,
+        };
+        db.insert_symbol(other_file_id, &sym, None).unwrap();
+
+        let updated_id = db.upsert_file("/test.rs", "newhash", "rust").unwrap();
+        assert_eq!(updated_id, file_id);
     }
 
     #[test]
