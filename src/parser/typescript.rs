@@ -87,12 +87,41 @@ const IMPORT_QUERY: &str = r#"
 ) @import_node
 "#;
 
-pub fn parse(source: &str) -> Result<ParseResult> {
-    let lang: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&lang).context("Failed to set TypeScript language")?;
+const TEST_CALLBACK_QUERY: &str = r#"
+(call_expression
+    function: (identifier) @test_fn
+    arguments: (arguments
+        [
+            (arrow_function) @test_cb
+            (function_expression) @test_cb
+        ]
+    )
+) @test_call
 
-    let tree = parser.parse(source, None).context("Failed to parse TypeScript source")?;
+(call_expression
+    function: (member_expression
+        object: (identifier) @test_obj
+        property: (property_identifier) @test_prop
+    )
+    arguments: (arguments
+        [
+            (arrow_function) @test_member_cb
+            (function_expression) @test_member_cb
+        ]
+    )
+) @test_member_call
+"#;
+
+pub fn parse(source: &str) -> Result<ParseResult> {
+    let lang: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TSX.into();
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&lang)
+        .context("Failed to set TypeScript language")?;
+
+    let tree = parser
+        .parse(source, None)
+        .context("Failed to parse TypeScript source")?;
     let root = tree.root_node();
     let src = source.as_bytes();
 
@@ -102,11 +131,16 @@ pub fn parse(source: &str) -> Result<ParseResult> {
 
     parse_symbols(root, src, &lang, &mut symbols)?;
     parse_arrow_functions(root, src, &lang, &mut symbols)?;
+    parse_test_callbacks(root, src, &lang, &mut symbols)?;
     parse_calls(root, src, &lang, &symbols, &mut references)?;
     parse_imports(root, src, &lang, &mut imports)?;
     parse_inheritance(root, src, &mut references)?;
 
-    Ok(ParseResult { symbols, references, imports })
+    Ok(ParseResult {
+        symbols,
+        references,
+        imports,
+    })
 }
 
 fn cap_node<'a>(m: &tree_sitter::QueryMatch<'_, 'a>, idx: u32) -> Option<tree_sitter::Node<'a>> {
@@ -117,37 +151,64 @@ fn cap_text<'a>(m: &tree_sitter::QueryMatch<'_, 'a>, idx: u32, src: &'a [u8]) ->
     cap_node(m, idx).map(|n| node_text(n, src))
 }
 
-fn build_fn_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], ni: u32, pi: u32) -> Symbol {
+fn build_fn_sym(
+    m: &tree_sitter::QueryMatch,
+    nn: tree_sitter::Node,
+    src: &[u8],
+    ni: u32,
+    pi: u32,
+) -> Symbol {
     let name = node_text(nn, src).to_string();
     let fn_node = cap_node(m, ni).unwrap_or(nn);
     let params = cap_text(m, pi, src).unwrap_or("");
     Symbol {
-        name, kind: SymbolKind::Function,
-        line_start: fn_node.start_position().row, line_end: fn_node.end_position().row,
-        parent_name: None, visibility: extract_ts_export(fn_node),
+        name,
+        kind: SymbolKind::Function,
+        line_start: fn_node.start_position().row,
+        line_end: fn_node.end_position().row,
+        parent_name: None,
+        visibility: extract_ts_export(fn_node),
         signature: Some(format!("function {}", params)),
         is_test: false,
     }
 }
 
-fn build_class_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], ni: u32, vis: Option<String>) -> Symbol {
+fn build_class_sym(
+    m: &tree_sitter::QueryMatch,
+    nn: tree_sitter::Node,
+    src: &[u8],
+    ni: u32,
+    vis: Option<String>,
+) -> Symbol {
     let name = node_text(nn, src).to_string();
     let container = cap_node(m, ni).unwrap_or(nn);
     Symbol {
-        name, kind: SymbolKind::Class,
-        line_start: container.start_position().row, line_end: container.end_position().row,
-        parent_name: None, visibility: vis, signature: None,
+        name,
+        kind: SymbolKind::Class,
+        line_start: container.start_position().row,
+        line_end: container.end_position().row,
+        parent_name: None,
+        visibility: vis,
+        signature: None,
         is_test: false,
     }
 }
 
-fn build_method_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], ni: u32, pi: u32) -> Symbol {
+fn build_method_sym(
+    m: &tree_sitter::QueryMatch,
+    nn: tree_sitter::Node,
+    src: &[u8],
+    ni: u32,
+    pi: u32,
+) -> Symbol {
     let name = node_text(nn, src).to_string();
     let method_node = cap_node(m, ni).unwrap_or(nn);
     let params = cap_text(m, pi, src).unwrap_or("");
     Symbol {
-        name, kind: SymbolKind::Method,
-        line_start: method_node.start_position().row, line_end: method_node.end_position().row,
+        name,
+        kind: SymbolKind::Method,
+        line_start: method_node.start_position().row,
+        line_end: method_node.end_position().row,
         parent_name: find_parent_class_ts(nn, src),
         visibility: extract_method_vis(method_node, src),
         signature: Some(format!("method {}", params)),
@@ -155,18 +216,33 @@ fn build_method_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u
     }
 }
 
-fn build_type_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], ni: u32, kind: SymbolKind) -> Symbol {
+fn build_type_sym(
+    m: &tree_sitter::QueryMatch,
+    nn: tree_sitter::Node,
+    src: &[u8],
+    ni: u32,
+    kind: SymbolKind,
+) -> Symbol {
     let name = node_text(nn, src).to_string();
     let container = cap_node(m, ni).unwrap_or(nn);
     Symbol {
-        name, kind,
-        line_start: container.start_position().row, line_end: container.end_position().row,
-        parent_name: None, visibility: extract_ts_export(container), signature: None,
+        name,
+        kind,
+        line_start: container.start_position().row,
+        line_end: container.end_position().row,
+        parent_name: None,
+        visibility: extract_ts_export(container),
+        signature: None,
         is_test: false,
     }
 }
 
-fn parse_symbols(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, symbols: &mut Vec<Symbol>) -> Result<()> {
+fn parse_symbols(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &mut Vec<Symbol>,
+) -> Result<()> {
     let query = Query::new(lang, SYMBOL_QUERY).context("Invalid TS symbol query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -188,20 +264,45 @@ fn parse_symbols(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
         for cap in m.captures {
             let sym = match cap.index {
                 i if i == fn_n => Some(build_fn_sym(m, cap.node, src, fn_nd, fn_p)),
-                i if i == cn => Some(build_class_sym(m, cap.node, src, cnd, extract_ts_export(cap.node))),
-                i if i == acn => Some(build_class_sym(m, cap.node, src, acnd, Some("abstract".into()))),
-                i if i == iface_n => Some(build_type_sym(m, cap.node, src, iface_nd, SymbolKind::Interface)),
+                i if i == cn => Some(build_class_sym(
+                    m,
+                    cap.node,
+                    src,
+                    cnd,
+                    extract_ts_export(cap.node),
+                )),
+                i if i == acn => Some(build_class_sym(
+                    m,
+                    cap.node,
+                    src,
+                    acnd,
+                    Some("abstract".into()),
+                )),
+                i if i == iface_n => Some(build_type_sym(
+                    m,
+                    cap.node,
+                    src,
+                    iface_nd,
+                    SymbolKind::Interface,
+                )),
                 i if i == mn => Some(build_method_sym(m, cap.node, src, mnd, mp)),
                 i if i == en => Some(build_type_sym(m, cap.node, src, end, SymbolKind::Enum)),
                 _ => None,
             };
-            if let Some(s) = sym { symbols.push(s); }
+            if let Some(s) = sym {
+                symbols.push(s);
+            }
         }
     });
     Ok(())
 }
 
-fn parse_arrow_functions(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, symbols: &mut Vec<Symbol>) -> Result<()> {
+fn parse_arrow_functions(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &mut Vec<Symbol>,
+) -> Result<()> {
     let query = Query::new(lang, ARROW_FN_QUERY).context("Invalid TS arrow fn query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -216,27 +317,118 @@ fn parse_arrow_functions(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter
             if cap.index == an {
                 symbols.push(build_arrow_sym(m, cap.node, src, and, ap, "const =>"));
             } else if cap.index == fen {
-                symbols.push(build_arrow_sym(m, cap.node, src, fend, fep, "const function"));
+                symbols.push(build_arrow_sym(
+                    m,
+                    cap.node,
+                    src,
+                    fend,
+                    fep,
+                    "const function",
+                ));
             }
         }
     });
     Ok(())
 }
 
-fn build_arrow_sym(m: &tree_sitter::QueryMatch, nn: tree_sitter::Node, src: &[u8], ni: u32, pi: u32, prefix: &str) -> Symbol {
+fn parse_test_callbacks(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &mut Vec<Symbol>,
+) -> Result<()> {
+    let query = Query::new(lang, TEST_CALLBACK_QUERY).context("Invalid TS test callback query")?;
+    let mut sequence = 0usize;
+
+    for_each_match(&query, root, src, |m, q, _| {
+        let test_fn = q.capture_index_for_name("test_fn");
+        let test_cb = q.capture_index_for_name("test_cb");
+        let test_obj = q.capture_index_for_name("test_obj");
+        let test_prop = q.capture_index_for_name("test_prop");
+        let test_member_cb = q.capture_index_for_name("test_member_cb");
+
+        let mut callback_node = None;
+        let mut is_test = false;
+
+        if let (Some(fn_idx), Some(cb_idx)) = (test_fn, test_cb) {
+            if let Some(fn_name) = cap_text(m, fn_idx, src) {
+                if is_ts_test_fn(fn_name) {
+                    callback_node = cap_node(m, cb_idx);
+                    is_test = callback_node.is_some();
+                }
+            }
+        }
+
+        if !is_test {
+            if let (Some(obj_idx), Some(prop_idx), Some(cb_idx)) =
+                (test_obj, test_prop, test_member_cb)
+            {
+                let obj = cap_text(m, obj_idx, src).unwrap_or("");
+                let prop = cap_text(m, prop_idx, src).unwrap_or("");
+                if is_ts_test_fn(obj) && is_ts_test_modifier(prop) {
+                    callback_node = cap_node(m, cb_idx);
+                    is_test = callback_node.is_some();
+                }
+            }
+        }
+
+        if let Some(cb) = callback_node.filter(|_| is_test) {
+            sequence += 1;
+            let line = cb.start_position().row;
+            symbols.push(Symbol {
+                name: format!("__ts_test_{}_{}", line, sequence),
+                kind: SymbolKind::Function,
+                line_start: line,
+                line_end: cb.end_position().row,
+                parent_name: None,
+                visibility: None,
+                signature: Some("test callback".to_string()),
+                is_test: true,
+            });
+        }
+    });
+
+    Ok(())
+}
+
+fn is_ts_test_fn(name: &str) -> bool {
+    matches!(name, "test" | "it")
+}
+
+fn is_ts_test_modifier(name: &str) -> bool {
+    matches!(name, "only" | "skip" | "concurrent" | "fails")
+}
+
+fn build_arrow_sym(
+    m: &tree_sitter::QueryMatch,
+    nn: tree_sitter::Node,
+    src: &[u8],
+    ni: u32,
+    pi: u32,
+    prefix: &str,
+) -> Symbol {
     let name = node_text(nn, src).to_string();
     let fn_node = cap_node(m, ni).unwrap_or(nn);
     let params = cap_text(m, pi, src).unwrap_or("");
     Symbol {
-        name, kind: SymbolKind::Function,
-        line_start: fn_node.start_position().row, line_end: fn_node.end_position().row,
-        parent_name: None, visibility: None,
+        name,
+        kind: SymbolKind::Function,
+        line_start: fn_node.start_position().row,
+        line_end: fn_node.end_position().row,
+        parent_name: None,
+        visibility: None,
         signature: Some(format!("{} {}", prefix, params)),
         is_test: false,
     }
 }
 
-fn parse_calls(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, symbols: &[Symbol], references: &mut Vec<Reference>) -> Result<()> {
+fn parse_calls(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &[Symbol],
+    references: &mut Vec<Reference>,
+) -> Result<()> {
     let query = Query::new(lang, CALL_QUERY).context("Invalid TS call query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -249,8 +441,10 @@ fn parse_calls(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language
             if cap.index == ci || cap.index == mi || cap.index == ni || cap.index == nmi {
                 let line = cap.node.start_position().row;
                 references.push(Reference {
-                    kind: RefKind::Call, target_name: node_text(cap.node, src).to_string(),
-                    target_qualifier: None, line,
+                    kind: RefKind::Call,
+                    target_name: node_text(cap.node, src).to_string(),
+                    target_qualifier: None,
+                    line,
                     source_symbol_name: find_enclosing_symbol(symbols, line),
                 });
             }
@@ -259,7 +453,12 @@ fn parse_calls(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language
     Ok(())
 }
 
-fn parse_imports(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, imports: &mut Vec<Import>) -> Result<()> {
+fn parse_imports(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    imports: &mut Vec<Import>,
+) -> Result<()> {
     let query = Query::new(lang, IMPORT_QUERY).context("Invalid TS import query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -278,8 +477,10 @@ fn parse_imports(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
                 let alias = alias_idx.and_then(|idx| cap_text(m, idx, src).map(|s| s.to_string()));
                 let local = alias.clone().unwrap_or_else(|| name.clone());
                 imports.push(Import {
-                    local_name: local, full_path: format!("{}.{}", source_path, name),
-                    alias, line: cap.node.start_position().row,
+                    local_name: local,
+                    full_path: format!("{}.{}", source_path, name),
+                    alias,
+                    line: cap.node.start_position().row,
                 });
             }
         }
@@ -287,8 +488,10 @@ fn parse_imports(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
             if let Some(cap) = m.captures.iter().find(|c| c.index == di) {
                 let name = node_text(cap.node, src).to_string();
                 imports.push(Import {
-                    local_name: name, full_path: format!("{}.default", source_path),
-                    alias: None, line: cap.node.start_position().row,
+                    local_name: name,
+                    full_path: format!("{}.default", source_path),
+                    alias: None,
+                    line: cap.node.start_position().row,
                 });
             }
         }
@@ -296,7 +499,11 @@ fn parse_imports(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
     Ok(())
 }
 
-fn parse_inheritance(root: tree_sitter::Node, src: &[u8], references: &mut Vec<Reference>) -> Result<()> {
+fn parse_inheritance(
+    root: tree_sitter::Node,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+) -> Result<()> {
     walk_for_inheritance(root, src, references);
     Ok(())
 }
@@ -320,7 +527,12 @@ fn walk_for_inheritance(node: tree_sitter::Node, src: &[u8], refs: &mut Vec<Refe
     }
 }
 
-fn parse_heritage(node: tree_sitter::Node, src: &[u8], cls: &Option<String>, refs: &mut Vec<Reference>) {
+fn parse_heritage(
+    node: tree_sitter::Node,
+    src: &[u8],
+    cls: &Option<String>,
+    refs: &mut Vec<Reference>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
@@ -332,7 +544,13 @@ fn parse_heritage(node: tree_sitter::Node, src: &[u8], cls: &Option<String>, ref
     }
 }
 
-fn emit_heritage(node: tree_sitter::Node, src: &[u8], kind: RefKind, cls: &Option<String>, refs: &mut Vec<Reference>) {
+fn emit_heritage(
+    node: tree_sitter::Node,
+    src: &[u8],
+    kind: RefKind,
+    cls: &Option<String>,
+    refs: &mut Vec<Reference>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let target = match child.kind() {
@@ -342,8 +560,11 @@ fn emit_heritage(node: tree_sitter::Node, src: &[u8], kind: RefKind, cls: &Optio
             };
             if let Some(name) = target {
                 refs.push(Reference {
-                    kind: kind.clone(), target_name: name, target_qualifier: None,
-                    line: child.start_position().row, source_symbol_name: cls.clone(),
+                    kind: kind.clone(),
+                    target_name: name,
+                    target_qualifier: None,
+                    line: child.start_position().row,
+                    source_symbol_name: cls.clone(),
                 });
             }
         }
@@ -353,7 +574,9 @@ fn emit_heritage(node: tree_sitter::Node, src: &[u8], kind: RefKind, cls: &Optio
 fn find_class_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if child.kind() == "type_identifier" { return Some(node_text(child, src).to_string()); }
+            if child.kind() == "type_identifier" {
+                return Some(node_text(child, src).to_string());
+            }
         }
     }
     None
@@ -371,13 +594,17 @@ fn find_parent_class_ts<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> Optio
 }
 
 fn extract_ts_export(node: tree_sitter::Node) -> Option<String> {
-    node.parent().filter(|p| p.kind() == "export_statement").map(|_| "export".to_string())
+    node.parent()
+        .filter(|p| p.kind() == "export_statement")
+        .map(|_| "export".to_string())
 }
 
 fn extract_method_vis(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if child.kind() == "accessibility_modifier" { return Some(node_text(child, src).to_string()); }
+            if child.kind() == "accessibility_modifier" {
+                return Some(node_text(child, src).to_string());
+            }
         }
     }
     None
@@ -391,10 +618,30 @@ mod tests {
     fn test_parse_ts_class() {
         let src = "class Svc extends Base implements Ser {\n    public getName(): string { return ''; }\n}\n";
         let result = parse(src).unwrap();
-        assert!(result.symbols.iter().any(|s| s.name == "Svc" && s.kind == SymbolKind::Class));
-        assert!(result.symbols.iter().any(|s| s.name == "getName" && s.kind == SymbolKind::Method));
-        assert!(result.references.iter().any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit));
-        assert!(result.references.iter().any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Svc" && s.kind == SymbolKind::Class)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "getName" && s.kind == SymbolKind::Method)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement)
+        );
     }
 
     #[test]
@@ -409,9 +656,38 @@ mod tests {
     fn test_parse_ts_calls() {
         let src = "function main() {\n    const app = express();\n    app.listen(3000);\n    const user = new User('test');\n}\n";
         let result = parse(src).unwrap();
-        let names: Vec<&str> = result.references.iter().filter(|r| r.kind == RefKind::Call).map(|r| r.target_name.as_str()).collect();
+        let names: Vec<&str> = result
+            .references
+            .iter()
+            .filter(|r| r.kind == RefKind::Call)
+            .map(|r| r.target_name.as_str())
+            .collect();
         assert!(names.contains(&"express"));
         assert!(names.contains(&"listen"));
         assert!(names.contains(&"User"));
+    }
+
+    #[test]
+    fn test_parse_ts_vitest_callbacks_as_tests() {
+        let src = "it('renders login', () => {\n    render(<Login />);\n    fireEvent.click(button);\n});\n\ntest.only('search flow', function () {\n    runSearch();\n});\n";
+        let result = parse(src).unwrap();
+
+        let test_symbols: Vec<&Symbol> = result.symbols.iter().filter(|s| s.is_test).collect();
+        assert_eq!(test_symbols.len(), 2);
+
+        let refs_from_tests: Vec<&Reference> = result
+            .references
+            .iter()
+            .filter(|r| {
+                r.kind == RefKind::Call
+                    && r.source_symbol_name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("__ts_test_"))
+            })
+            .collect();
+
+        assert!(refs_from_tests.iter().any(|r| r.target_name == "render"));
+        assert!(refs_from_tests.iter().any(|r| r.target_name == "click"));
+        assert!(refs_from_tests.iter().any(|r| r.target_name == "runSearch"));
     }
 }
