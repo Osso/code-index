@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 
 use crate::db::Database;
-use crate::model::{CallInfo, HierarchyEntry, ImportedByEntry, ResolvedImport, StoredReference, StoredSymbol};
+use crate::model::{
+    CallInfo, HierarchyEntry, ImportedByEntry, ResolvedImport, StoredReference, StoredSymbol,
+};
 
 /// Find symbol definitions by name, optionally filtered by kind and file.
 pub fn find_symbols(
@@ -35,7 +37,8 @@ pub fn find_symbols(
         (None, Some(f)) => stmt.query_map(params![name, f], map_stored_symbol)?,
         (None, None) => stmt.query_map(params![name], map_stored_symbol)?,
     };
-    rows.collect::<Result<Vec<_>, _>>().context("Failed to query symbols")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query symbols")
 }
 
 fn map_stored_symbol(row: &rusqlite::Row) -> rusqlite::Result<StoredSymbol> {
@@ -101,33 +104,70 @@ fn find_callers_recursive(
 
 fn query_callers(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<CallInfo>> {
     let conn = db.conn();
-    let sql = if file.is_some() {
-        "SELECT DISTINCT s.name, f.path, r.line, r.kind
-         FROM refs r
-         JOIN files f ON r.source_file_id = f.id
-         LEFT JOIN symbols s ON r.source_symbol_id = s.id
-         WHERE r.target_name = ?1 AND r.kind = 'call'
-         AND f.path LIKE '%' || ?2 || '%'"
-    } else {
-        "SELECT DISTINCT s.name, f.path, r.line, r.kind
-         FROM refs r
-         JOIN files f ON r.source_file_id = f.id
-         LEFT JOIN symbols s ON r.source_symbol_id = s.id
-         WHERE r.target_name = ?1 AND r.kind = 'call'"
-    };
+    if let Some(target_file) = file {
+        let mut id_stmt = conn.prepare(
+            "SELECT s.id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1
+             AND f.path LIKE '%' || ?2 || '%'",
+        )?;
+        let target_ids = id_stmt
+            .query_map(params![name, target_file], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
 
-    let mut stmt = conn.prepare(sql)?;
-    let rows = if let Some(f) = file {
-        stmt.query_map(params![name, f], map_call_info)?
+        if target_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = std::iter::repeat("?")
+            .take(target_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT DISTINCT s.name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             WHERE r.kind = 'call'
+             AND (
+                r.target_symbol_id IN ({})
+                OR (r.target_symbol_id IS NULL AND r.target_name = ?)
+             )",
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut dyn_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for id in target_ids {
+            dyn_params.push(Box::new(id));
+        }
+        dyn_params.push(Box::new(name.to_string()));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            dyn_params.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(param_refs.as_slice(), map_call_info)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to query callers")
     } else {
-        stmt.query_map(params![name], map_call_info)?
-    };
-    rows.collect::<Result<Vec<_>, _>>().context("Failed to query callers")
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             WHERE r.target_name = ?1 AND r.kind = 'call'",
+        )?;
+        let rows = stmt.query_map(params![name], map_call_info)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to query callers")
+    }
 }
 
 fn map_call_info(row: &rusqlite::Row) -> rusqlite::Result<CallInfo> {
     Ok(CallInfo {
-        symbol_name: row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "<top-level>".into()),
+        symbol_name: row
+            .get::<_, Option<String>>(0)?
+            .unwrap_or_else(|| "<top-level>".into()),
         file_path: row.get(1)?,
         line: row.get(2)?,
         kind: row.get(3)?,
@@ -206,7 +246,8 @@ fn query_callees(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<Ca
     } else {
         stmt.query_map(params![name], map_callee_info)?
     };
-    rows.collect::<Result<Vec<_>, _>>().context("Failed to query callees")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query callees")
 }
 
 fn map_callee_info(row: &rusqlite::Row) -> rusqlite::Result<CallInfo> {
@@ -261,7 +302,8 @@ pub fn find_dead_code(
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let rows = stmt.query_map(param_refs.as_slice(), map_stored_symbol)?;
-    rows.collect::<Result<Vec<_>, _>>().context("Failed to query dead code")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query dead code")
 }
 
 /// Find all structural references to a symbol.
@@ -300,7 +342,8 @@ pub fn find_references(
     } else {
         stmt.query_map(params![name], map_stored_reference)?
     };
-    rows.collect::<Result<Vec<_>, _>>().context("Failed to query references")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query references")
 }
 
 fn map_stored_reference(row: &rusqlite::Row) -> rusqlite::Result<StoredReference> {
@@ -368,7 +411,13 @@ fn query_imports(
 
     let mut stmt = conn.prepare(sql)?;
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<_> {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
     };
 
     let rows = if let Some(f) = file {
@@ -436,7 +485,10 @@ fn resolve_import_target(
     let path_parts: Vec<&str> = full_path.split(&['\\', '.', ':', '/'][..]).collect();
     for candidate in &candidates {
         let file_lower = candidate.0.to_lowercase();
-        if path_parts.iter().all(|p| file_lower.contains(&p.to_lowercase())) {
+        if path_parts
+            .iter()
+            .all(|p| file_lower.contains(&p.to_lowercase()))
+        {
             return Ok(Some(candidate.clone()));
         }
     }
@@ -642,18 +694,26 @@ fn map_imported_by(row: &rusqlite::Row) -> rusqlite::Result<ImportedByEntry> {
 }
 
 /// Find class/trait hierarchy (ancestors, descendants, or both).
-pub fn find_hierarchy(
-    db: &Database,
-    name: &str,
-    direction: &str,
-) -> Result<Vec<HierarchyEntry>> {
+pub fn find_hierarchy(db: &Database, name: &str, direction: &str) -> Result<Vec<HierarchyEntry>> {
     let mut results = Vec::new();
 
     if direction == "ancestors" || direction == "both" {
-        find_ancestors(db, name, 0, &mut results, &mut std::collections::HashSet::new())?;
+        find_ancestors(
+            db,
+            name,
+            0,
+            &mut results,
+            &mut std::collections::HashSet::new(),
+        )?;
     }
     if direction == "descendants" || direction == "both" {
-        find_descendants(db, name, 0, &mut results, &mut std::collections::HashSet::new())?;
+        find_descendants(
+            db,
+            name,
+            0,
+            &mut results,
+            &mut std::collections::HashSet::new(),
+        )?;
     }
 
     Ok(results)

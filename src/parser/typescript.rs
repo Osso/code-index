@@ -68,6 +68,14 @@ const CALL_QUERY: &str = r#"
         property: (property_identifier) @new_member_name
     )
 ) @new_member_node
+
+(jsx_self_closing_element
+    name: (identifier) @jsx_component_name
+) @jsx_self_closing_node
+
+(jsx_opening_element
+    name: (identifier) @jsx_component_name
+) @jsx_opening_node
 "#;
 
 const IMPORT_QUERY: &str = r#"
@@ -436,6 +444,7 @@ fn parse_calls(
         let mi = q.capture_index_for_name("method_call_name").unwrap();
         let ni = q.capture_index_for_name("new_name").unwrap();
         let nmi = q.capture_index_for_name("new_member_name").unwrap();
+        let ji = q.capture_index_for_name("jsx_component_name").unwrap();
 
         for cap in m.captures {
             if cap.index == ci || cap.index == mi || cap.index == ni || cap.index == nmi {
@@ -447,6 +456,18 @@ fn parse_calls(
                     line,
                     source_symbol_name: find_enclosing_symbol(symbols, line),
                 });
+            } else if cap.index == ji {
+                let name = node_text(cap.node, src);
+                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    let line = cap.node.start_position().row;
+                    references.push(Reference {
+                        kind: RefKind::Call,
+                        target_name: name.to_string(),
+                        target_qualifier: None,
+                        line,
+                        source_symbol_name: find_enclosing_symbol(symbols, line),
+                    });
+                }
             }
         }
     });
@@ -618,30 +639,22 @@ mod tests {
     fn test_parse_ts_class() {
         let src = "class Svc extends Base implements Ser {\n    public getName(): string { return ''; }\n}\n";
         let result = parse(src).unwrap();
-        assert!(
-            result
-                .symbols
-                .iter()
-                .any(|s| s.name == "Svc" && s.kind == SymbolKind::Class)
-        );
-        assert!(
-            result
-                .symbols
-                .iter()
-                .any(|s| s.name == "getName" && s.kind == SymbolKind::Method)
-        );
-        assert!(
-            result
-                .references
-                .iter()
-                .any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit)
-        );
-        assert!(
-            result
-                .references
-                .iter()
-                .any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement)
-        );
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "Svc" && s.kind == SymbolKind::Class));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.name == "getName" && s.kind == SymbolKind::Method));
+        assert!(result
+            .references
+            .iter()
+            .any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit));
+        assert!(result
+            .references
+            .iter()
+            .any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement));
     }
 
     #[test]
@@ -689,5 +702,25 @@ mod tests {
         assert!(refs_from_tests.iter().any(|r| r.target_name == "render"));
         assert!(refs_from_tests.iter().any(|r| r.target_name == "click"));
         assert!(refs_from_tests.iter().any(|r| r.target_name == "runSearch"));
+    }
+
+    #[test]
+    fn test_parse_ts_jsx_component_refs_from_tests() {
+        let src = "export function Login() {\n    return <div />;\n}\n\nit('renders login', () => {\n    render(<Login />);\n});\n";
+        let result = parse(src).unwrap();
+
+        let refs_from_tests: Vec<&Reference> = result
+            .references
+            .iter()
+            .filter(|r| {
+                r.kind == RefKind::Call
+                    && r.source_symbol_name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("__ts_test_"))
+            })
+            .collect();
+
+        assert!(refs_from_tests.iter().any(|r| r.target_name == "render"));
+        assert!(refs_from_tests.iter().any(|r| r.target_name == "Login"));
     }
 }
