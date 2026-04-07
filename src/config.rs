@@ -37,8 +37,7 @@ pub fn save(config: &Config) -> Result<()> {
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let contents = toml::to_string_pretty(config).context("Failed to serialize config")?;
-    std::fs::write(&path, contents)
-        .with_context(|| format!("Failed to write {}", path.display()))
+    std::fs::write(&path, contents).with_context(|| format!("Failed to write {}", path.display()))
 }
 
 pub fn add_project(name: &str, path: &Path) -> Result<()> {

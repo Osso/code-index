@@ -23,7 +23,8 @@ impl CodeIndexService {
     }
 
     fn open_db(&self) -> Result<Database, String> {
-        let db_path = crate::project::resolve_db(None).map_err(|e| format!("Project error: {e}"))?;
+        let db_path =
+            crate::project::resolve_db(None).map_err(|e| format!("Project error: {e}"))?;
         Database::open(&db_path).map_err(|e| format!("DB error: {e}"))
     }
 }
@@ -40,7 +41,9 @@ pub struct IndexParams {
 pub struct SymbolParams {
     #[schemars(description = "Symbol name to search for")]
     name: String,
-    #[schemars(description = "Filter by kind: function, method, class, trait, interface, struct, enum")]
+    #[schemars(
+        description = "Filter by kind: function, method, class, trait, interface, struct, enum"
+    )]
     kind: Option<String>,
     #[schemars(description = "Filter by file path (substring match)")]
     file: Option<String>,
@@ -110,9 +113,21 @@ pub struct ResolveImportParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportedByParams {
-    #[schemars(description = "Module path or symbol name to find importers of (substring match on import path)")]
+    #[schemars(
+        description = "Module path or symbol name to find importers of (substring match on import path)"
+    )]
     name: String,
     #[schemars(description = "Filter by importing file path (substring match)")]
+    file: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListParams {
+    #[schemars(
+        description = "Filter by symbol kind: function, method, class, trait, interface, struct, enum"
+    )]
+    kind: Option<String>,
+    #[schemars(description = "Filter by file path (substring match)")]
     file: Option<String>,
 }
 
@@ -220,7 +235,9 @@ impl CodeIndexService {
         }
     }
 
-    #[tool(description = "Find which test functions call a given symbol (directly or transitively)")]
+    #[tool(
+        description = "Find which test functions call a given symbol (directly or transitively)"
+    )]
     async fn tested_by(&self, Parameters(p): Parameters<TestedByParams>) -> String {
         let db = match self.open_db() {
             Ok(db) => db,
@@ -246,7 +263,9 @@ impl CodeIndexService {
         }
     }
 
-    #[tool(description = "Find files that import a given module/symbol (reverse dependency lookup)")]
+    #[tool(
+        description = "Find files that import a given module/symbol (reverse dependency lookup)"
+    )]
     async fn imported_by(&self, Parameters(p): Parameters<ImportedByParams>) -> String {
         let db = match self.open_db() {
             Ok(db) => db,
@@ -254,6 +273,21 @@ impl CodeIndexService {
         };
         match query::find_imported_by(&db, &p.name, p.file.as_deref()) {
             Ok(entries) => format_imported_by(&entries),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(description = "List all indexed symbols, optionally filtered by kind and/or file")]
+    async fn list(&self, Parameters(p): Parameters<ListParams>) -> String {
+        let db = match self.open_db() {
+            Ok(db) => db,
+            Err(e) => return e,
+        };
+        match query::list_symbols(&db, p.kind.as_deref(), p.file.as_deref()) {
+            Ok(symbols) => match serde_json::to_string(&symbols) {
+                Ok(json) => json,
+                Err(e) => format!("Serialization error: {}", e),
+            },
             Err(e) => format!("Error: {}", e),
         }
     }
@@ -281,9 +315,18 @@ fn format_symbols(symbols: &[crate::model::StoredSymbol]) -> String {
         .map(|s| {
             let sig = s.signature.as_deref().unwrap_or("");
             let vis = s.visibility.as_deref().unwrap_or("");
-            format!("{} {} {} {}:{}-{}", vis, s.kind, s.name, s.file_path, s.line_start, s.line_end)
-                .trim().to_string()
-                + if sig.is_empty() { "".to_string() } else { format!(" | {}", sig) }.as_str()
+            format!(
+                "{} {} {} {}:{}-{}",
+                vis, s.kind, s.name, s.file_path, s.line_start, s.line_end
+            )
+            .trim()
+            .to_string()
+                + if sig.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" | {}", sig)
+                }
+                .as_str()
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -309,7 +352,10 @@ fn format_references(refs: &[crate::model::StoredReference]) -> String {
         .map(|r| {
             let source = r.source_symbol.as_deref().unwrap_or("<file-level>");
             let resolved = if r.resolved { " [resolved]" } else { "" };
-            format!("  [{}] {} in {}:{}{}", r.kind, source, r.source_file, r.line, resolved)
+            format!(
+                "  [{}] {} in {}:{}{}",
+                r.kind, source, r.source_file, r.line, resolved
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -323,7 +369,10 @@ fn format_hierarchy(entries: &[crate::model::HierarchyEntry]) -> String {
         .iter()
         .map(|e| {
             let indent = "  ".repeat(e.depth as usize);
-            format!("{}{} ({}) in {} | {}", indent, e.name, e.kind, e.file_path, e.relation)
+            format!(
+                "{}{} ({}) in {} | {}",
+                indent, e.name, e.kind, e.file_path, e.relation
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -337,11 +386,24 @@ fn format_resolved_imports(imports: &[crate::model::ResolvedImport]) -> String {
         .iter()
         .map(|i| {
             let target = match (&i.target_file, &i.target_symbol, &i.target_line) {
-                (Some(f), Some(s), Some(l)) => format!(" → {} {} in {}:{}", i.target_kind.as_deref().unwrap_or("?"), s, f, l),
+                (Some(f), Some(s), Some(l)) => format!(
+                    " → {} {} in {}:{}",
+                    i.target_kind.as_deref().unwrap_or("?"),
+                    s,
+                    f,
+                    l
+                ),
                 _ => " → [unresolved]".to_string(),
             };
-            let alias = i.alias.as_ref().map(|a| format!(" as {a}")).unwrap_or_default();
-            format!("{}:{} {} ({}){}{}", i.source_file, i.line, i.local_name, i.full_path, alias, target)
+            let alias = i
+                .alias
+                .as_ref()
+                .map(|a| format!(" as {a}"))
+                .unwrap_or_default();
+            format!(
+                "{}:{} {} ({}){}{}",
+                i.source_file, i.line, i.local_name, i.full_path, alias, target
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -354,7 +416,12 @@ fn format_tested_by(tests: &[crate::model::StoredSymbol]) -> String {
     let header = format!("{} test(s) found:\n", tests.len());
     let lines: Vec<String> = tests
         .iter()
-        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .map(|s| {
+            format!(
+                "  {} {} in {}:{}",
+                s.kind, s.name, s.file_path, s.line_start
+            )
+        })
         .collect();
     header + &lines.join("\n")
 }
@@ -366,7 +433,12 @@ fn format_untested(symbols: &[crate::model::StoredSymbol]) -> String {
     let header = format!("{} untested functions/methods:\n", symbols.len());
     let lines: Vec<String> = symbols
         .iter()
-        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .map(|s| {
+            format!(
+                "  {} {} in {}:{}",
+                s.kind, s.name, s.file_path, s.line_start
+            )
+        })
         .collect();
     header + &lines.join("\n")
 }
@@ -379,8 +451,15 @@ fn format_imported_by(entries: &[crate::model::ImportedByEntry]) -> String {
     let lines: Vec<String> = entries
         .iter()
         .map(|e| {
-            let alias = e.alias.as_ref().map(|a| format!(" as {a}")).unwrap_or_default();
-            format!("  {}:{} {} ({}){}", e.file_path, e.line, e.local_name, e.full_path, alias)
+            let alias = e
+                .alias
+                .as_ref()
+                .map(|a| format!(" as {a}"))
+                .unwrap_or_default();
+            format!(
+                "  {}:{} {} ({}){}",
+                e.file_path, e.line, e.local_name, e.full_path, alias
+            )
         })
         .collect();
     header + &lines.join("\n")
@@ -393,7 +472,12 @@ fn format_dead_code(symbols: &[crate::model::StoredSymbol]) -> String {
     let header = format!("{} potentially unused functions:\n", symbols.len());
     let lines: Vec<String> = symbols
         .iter()
-        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .map(|s| {
+            format!(
+                "  {} {} in {}:{}",
+                s.kind, s.name, s.file_path, s.line_start
+            )
+        })
         .collect();
     header + &lines.join("\n")
 }

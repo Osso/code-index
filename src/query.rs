@@ -54,6 +54,44 @@ fn map_stored_symbol(row: &rusqlite::Row) -> rusqlite::Result<StoredSymbol> {
     })
 }
 
+/// List all symbols, optionally filtered by kind and/or file.
+pub fn list_symbols(
+    db: &Database,
+    kind: Option<&str>,
+    file: Option<&str>,
+) -> Result<Vec<StoredSymbol>> {
+    let conn = db.conn();
+    let mut sql = String::from(
+        "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+         FROM symbols s JOIN files f ON s.file_id = f.id",
+    );
+    let mut conditions = Vec::new();
+    if kind.is_some() {
+        conditions.push("s.kind = ?1");
+    }
+    if file.is_some() {
+        let idx = if kind.is_some() { "?2" } else { "?1" };
+        conditions.push(Box::leak(
+            format!("f.path LIKE '%' || {idx} || '%'").into_boxed_str(),
+        ));
+    }
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+    sql.push_str(" ORDER BY f.path, s.line_start");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match (kind, file) {
+        (Some(k), Some(f)) => stmt.query_map(params![k, f], map_stored_symbol)?,
+        (Some(k), None) => stmt.query_map(params![k], map_stored_symbol)?,
+        (None, Some(f)) => stmt.query_map(params![f], map_stored_symbol)?,
+        (None, None) => stmt.query_map([], map_stored_symbol)?,
+    };
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query symbols")
+}
+
 /// Find callers of a function/method (who calls this symbol).
 pub fn find_callers(
     db: &Database,

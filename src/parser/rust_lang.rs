@@ -60,9 +60,13 @@ const USE_QUERY: &str = r#"
 pub fn parse(source: &str) -> Result<ParseResult> {
     let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&lang).context("Failed to set Rust language")?;
+    parser
+        .set_language(&lang)
+        .context("Failed to set Rust language")?;
 
-    let tree = parser.parse(source, None).context("Failed to parse Rust source")?;
+    let tree = parser
+        .parse(source, None)
+        .context("Failed to parse Rust source")?;
     let root = tree.root_node();
     let src = source.as_bytes();
 
@@ -75,7 +79,11 @@ pub fn parse(source: &str) -> Result<ParseResult> {
     parse_uses(root, src, &lang, &mut imports)?;
     parse_impl_blocks(root, src, &lang, &symbols, &mut references)?;
 
-    Ok(ParseResult { symbols, references, imports })
+    Ok(ParseResult {
+        symbols,
+        references,
+        imports,
+    })
 }
 
 fn capture_node_by_idx<'a>(
@@ -93,7 +101,12 @@ fn capture_text_by_idx<'a>(
     capture_node_by_idx(m, idx).map(|n| node_text(n, src))
 }
 
-fn make_call_ref(name: &str, qualifier: Option<String>, line: usize, source: Option<String>) -> Reference {
+fn make_call_ref(
+    name: &str,
+    qualifier: Option<String>,
+    line: usize,
+    source: Option<String>,
+) -> Reference {
     Reference {
         kind: RefKind::Call,
         target_name: name.to_string(),
@@ -124,13 +137,37 @@ fn parse_symbols(
 
         for cap in m.captures {
             if cap.index == fn_name_idx {
-                symbols.push(build_fn_symbol(m, cap.node, src, fn_node_idx, fn_params_idx));
+                symbols.push(build_fn_symbol(
+                    m,
+                    cap.node,
+                    src,
+                    fn_node_idx,
+                    fn_params_idx,
+                ));
             } else if cap.index == struct_name_idx {
-                symbols.push(build_type_sym(m, cap.node, src, struct_node_idx, SymbolKind::Struct));
+                symbols.push(build_type_sym(
+                    m,
+                    cap.node,
+                    src,
+                    struct_node_idx,
+                    SymbolKind::Struct,
+                ));
             } else if cap.index == enum_name_idx {
-                symbols.push(build_type_sym(m, cap.node, src, enum_node_idx, SymbolKind::Enum));
+                symbols.push(build_type_sym(
+                    m,
+                    cap.node,
+                    src,
+                    enum_node_idx,
+                    SymbolKind::Enum,
+                ));
             } else if cap.index == trait_name_idx {
-                symbols.push(build_type_sym(m, cap.node, src, trait_node_idx, SymbolKind::Trait));
+                symbols.push(build_type_sym(
+                    m,
+                    cap.node,
+                    src,
+                    trait_node_idx,
+                    SymbolKind::Trait,
+                ));
             }
         }
     });
@@ -158,7 +195,11 @@ fn build_fn_symbol(
     let is_test = fn_node.map_or(false, |n| has_test_attribute(n, src));
     Symbol {
         name,
-        kind: if is_method { SymbolKind::Method } else { SymbolKind::Function },
+        kind: if is_method {
+            SymbolKind::Method
+        } else {
+            SymbolKind::Function
+        },
         line_start,
         line_end,
         parent_name,
@@ -229,10 +270,20 @@ fn parse_calls(
             let source_sym = find_enclosing_symbol(symbols, line);
 
             if cap.index == call_name_idx || cap.index == method_name_idx {
-                references.push(make_call_ref(node_text(cap.node, src), None, line, source_sym));
+                references.push(make_call_ref(
+                    node_text(cap.node, src),
+                    None,
+                    line,
+                    source_sym,
+                ));
             } else if cap.index == scoped_name_idx {
                 let qualifier = capture_text_by_idx(m, scoped_path_idx, src).map(|s| s.to_string());
-                references.push(make_call_ref(node_text(cap.node, src), qualifier, line, source_sym));
+                references.push(make_call_ref(
+                    node_text(cap.node, src),
+                    qualifier,
+                    line,
+                    source_sym,
+                ));
             } else if cap.index == macro_name_idx {
                 let name = format!("{}!", node_text(cap.node, src));
                 references.push(make_call_ref(&name, None, line, source_sym));
@@ -286,10 +337,14 @@ fn parse_impl_blocks(
             return;
         }
         let type_name: Option<&str> = capture_text_by_idx(m, impl_type_idx, src);
-        let trait_name: Option<&str> = impl_trait_idx.and_then(|idx| capture_text_by_idx(m, idx, src));
+        let trait_name: Option<&str> =
+            impl_trait_idx.and_then(|idx| capture_text_by_idx(m, idx, src));
 
         if let (Some(tn), Some(tr)) = (type_name, trait_name) {
-            let line = capture_node_by_idx(m, impl_node_idx).unwrap().start_position().row;
+            let line = capture_node_by_idx(m, impl_node_idx)
+                .unwrap()
+                .start_position()
+                .row;
             references.push(Reference {
                 kind: RefKind::TraitImpl,
                 target_name: tr.to_string(),
@@ -375,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_parse_use_statements() {
-        let src = "use std::collections::HashMap;\nuse crate::model::Symbol;\nuse anyhow::Result;\n";
+        let src =
+            "use std::collections::HashMap;\nuse crate::model::Symbol;\nuse anyhow::Result;\n";
         let result = parse(src).unwrap();
         assert_eq!(result.imports.len(), 3);
         assert_eq!(result.imports[0].local_name, "HashMap");
@@ -387,7 +443,11 @@ mod tests {
     fn test_parse_calls() {
         let src = "fn main() {\n    let x = foo();\n    bar.baz();\n    println!(\"hello\");\n}\n";
         let result = parse(src).unwrap();
-        let call_names: Vec<&str> = result.references.iter().map(|r| r.target_name.as_str()).collect();
+        let call_names: Vec<&str> = result
+            .references
+            .iter()
+            .map(|r| r.target_name.as_str())
+            .collect();
         assert!(call_names.contains(&"foo"));
         assert!(call_names.contains(&"baz"));
         assert!(call_names.contains(&"println!"));

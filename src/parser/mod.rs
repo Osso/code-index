@@ -25,12 +25,8 @@ pub fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
 
 /// Run a tree-sitter query and call a closure for each match.
 /// Handles the StreamingIterator from tree-sitter 0.25.
-pub fn for_each_match<F>(
-    query: &Query,
-    node: Node,
-    source: &[u8],
-    mut f: F,
-) where
+pub fn for_each_match<F>(query: &Query, node: Node, source: &[u8], mut f: F)
+where
     F: FnMut(&tree_sitter::QueryMatch, &Query, &[u8]),
 {
     let mut cursor = QueryCursor::new();

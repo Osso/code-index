@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
+use ignore::types::TypesBuilder;
 
 use crate::db::Database;
 use crate::model::Language;
@@ -71,8 +71,8 @@ fn build_walker(path: &Path) -> Result<ignore::Walk> {
 
 fn index_single_file(db: &Database, path: &Path, lang: Language, full: bool) -> Result<bool> {
     let path_str = path.to_str().context("Non-UTF8 path")?;
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path_str))?;
+    let source =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path_str))?;
     let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
     if !full {
@@ -92,20 +92,28 @@ fn index_single_file(db: &Database, path: &Path, lang: Language, full: bool) -> 
     Ok(true)
 }
 
-pub fn store_parse_result(db: &Database, file_id: i64, result: &crate::model::ParseResult) -> Result<()> {
+pub fn store_parse_result(
+    db: &Database,
+    file_id: i64,
+    result: &crate::model::ParseResult,
+) -> Result<()> {
     let mut symbol_ids: Vec<(String, i64)> = Vec::new();
 
     for sym in &result.symbols {
-        let parent_id = sym.parent_name.as_ref().and_then(|pn| {
-            symbol_ids.iter().find(|(n, _)| n == pn).map(|(_, id)| *id)
-        });
+        let parent_id = sym
+            .parent_name
+            .as_ref()
+            .and_then(|pn| symbol_ids.iter().find(|(n, _)| n == pn).map(|(_, id)| *id));
         let sym_id = db.insert_symbol(file_id, sym, parent_id)?;
         symbol_ids.push((sym.name.clone(), sym_id));
     }
 
     for reference in &result.references {
         let source_sym_id = reference.source_symbol_name.as_ref().and_then(|n| {
-            symbol_ids.iter().find(|(name, _)| name == n).map(|(_, id)| *id)
+            symbol_ids
+                .iter()
+                .find(|(name, _)| name == n)
+                .map(|(_, id)| *id)
         });
         db.insert_ref(file_id, reference, source_sym_id)?;
     }
@@ -126,7 +134,11 @@ pub struct IndexStats {
 
 impl std::fmt::Display for IndexStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Indexed: {}, Skipped: {}, Errors: {}", self.indexed, self.skipped, self.errors)
+        write!(
+            f,
+            "Indexed: {}, Skipped: {}, Errors: {}",
+            self.indexed, self.skipped, self.errors
+        )
     }
 }
 

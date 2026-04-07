@@ -127,6 +127,18 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
+    /// List all indexed symbols
+    List {
+        /// Filter by symbol kind (function, method, class, trait, interface, struct, enum)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by file path (substring match)
+        #[arg(long)]
+        file: Option<String>,
+        /// Override project path
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Watch directory and re-index on changes
     Watch {
         /// Directory to watch (default: current directory)
@@ -160,10 +172,7 @@ enum ProjectAction {
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
     dispatch(cli.command)
@@ -173,23 +182,47 @@ fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Serve => run_mcp_server()?,
         Command::Index { path, full } => cmd_index(path.as_deref(), full)?,
-        Command::Symbol { name, kind, file, path } => {
+        Command::Symbol {
+            name,
+            kind,
+            file,
+            path,
+        } => {
             cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?;
         }
-        Command::Callers { name, file, depth, path } => {
+        Command::Callers {
+            name,
+            file,
+            depth,
+            path,
+        } => {
             cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?;
         }
-        Command::Callees { name, file, depth, path } => {
+        Command::Callees {
+            name,
+            file,
+            depth,
+            path,
+        } => {
             cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?;
         }
         Command::DeadCode { exclude, path } => cmd_dead_code(path.as_deref(), &exclude)?,
-        Command::Hierarchy { name, direction, path } => {
+        Command::Hierarchy {
+            name,
+            direction,
+            path,
+        } => {
             cmd_hierarchy(path.as_deref(), &name, &direction)?;
         }
         Command::References { name, kind, path } => {
             cmd_references(path.as_deref(), &name, kind.as_deref())?;
         }
-        Command::TestedBy { name, file, depth, path } => {
+        Command::TestedBy {
+            name,
+            file,
+            depth,
+            path,
+        } => {
             cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?;
         }
         Command::Untested { exclude, path } => cmd_untested(path.as_deref(), &exclude)?,
@@ -198,6 +231,9 @@ fn dispatch(command: Command) -> Result<()> {
         }
         Command::ResolveImport { name, file, path } => {
             cmd_resolve_import(path.as_deref(), &name, file.as_deref())?;
+        }
+        Command::List { kind, file, path } => {
+            cmd_list(path.as_deref(), kind.as_deref(), file.as_deref())?;
         }
         Command::Watch { path } => cmd_watch(path.as_deref())?,
         Command::Status { path } => cmd_status(path.as_deref())?,
@@ -221,14 +257,13 @@ fn run_mcp_server() -> Result<()> {
 }
 
 fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
-    let project_dir = project::resolve_project_dir(path)
-        .or_else(|_| {
-            // For index, if no project found, use the explicit path or CWD
-            let p = path.unwrap_or(".");
-            std::path::Path::new(p)
-                .canonicalize()
-                .map_err(anyhow::Error::from)
-        })?;
+    let project_dir = project::resolve_project_dir(path).or_else(|_| {
+        // For index, if no project found, use the explicit path or CWD
+        let p = path.unwrap_or(".");
+        std::path::Path::new(p)
+            .canonicalize()
+            .map_err(anyhow::Error::from)
+    })?;
     let db_path = project::db_path(&project_dir);
     let dir_str = project_dir.to_string_lossy();
     let db = db::Database::open(&db_path)?;
@@ -239,7 +274,12 @@ fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_symbol(path: Option<&str>, name: &str, kind: Option<&str>, file: Option<&str>) -> Result<()> {
+fn cmd_symbol(
+    path: Option<&str>,
+    name: &str,
+    kind: Option<&str>,
+    file: Option<&str>,
+) -> Result<()> {
     let db = db::Database::open(&project::resolve_db(path)?)?;
     let symbols = query::find_symbols(&db, name, kind, file)?;
     let json = serde_json::to_string_pretty(&symbols)?;
@@ -319,14 +359,21 @@ fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Res
     Ok(())
 }
 
+fn cmd_list(path: Option<&str>, kind: Option<&str>, file: Option<&str>) -> Result<()> {
+    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let symbols = query::list_symbols(&db, kind, file)?;
+    let json = serde_json::to_string(&symbols)?;
+    println!("{json}");
+    Ok(())
+}
+
 fn cmd_watch(path: Option<&str>) -> Result<()> {
-    let project_dir = project::resolve_project_dir(path)
-        .or_else(|_| {
-            let p = path.unwrap_or(".");
-            std::path::Path::new(p)
-                .canonicalize()
-                .map_err(anyhow::Error::from)
-        })?;
+    let project_dir = project::resolve_project_dir(path).or_else(|_| {
+        let p = path.unwrap_or(".");
+        std::path::Path::new(p)
+            .canonicalize()
+            .map_err(anyhow::Error::from)
+    })?;
     let db_path = project::db_path(&project_dir);
     let dir_str = project_dir.to_string_lossy();
     watcher::watch(&db_path, &dir_str)

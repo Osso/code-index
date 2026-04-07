@@ -81,9 +81,13 @@ const INHERITANCE_QUERY: &str = r#"
 pub fn parse(source: &str) -> Result<ParseResult> {
     let lang: tree_sitter::Language = tree_sitter_php::LANGUAGE_PHP.into();
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&lang).context("Failed to set PHP language")?;
+    parser
+        .set_language(&lang)
+        .context("Failed to set PHP language")?;
 
-    let tree = parser.parse(source, None).context("Failed to parse PHP source")?;
+    let tree = parser
+        .parse(source, None)
+        .context("Failed to parse PHP source")?;
     let root = tree.root_node();
     let src = source.as_bytes();
 
@@ -96,7 +100,11 @@ pub fn parse(source: &str) -> Result<ParseResult> {
     parse_uses(root, src, &lang, &mut imports)?;
     parse_inheritance(root, src, &lang, &mut references)?;
 
-    Ok(ParseResult { symbols, references, imports })
+    Ok(ParseResult {
+        symbols,
+        references,
+        imports,
+    })
 }
 
 fn cap_node<'a>(m: &tree_sitter::QueryMatch<'_, 'a>, idx: u32) -> Option<tree_sitter::Node<'a>> {
@@ -107,8 +115,19 @@ fn cap_text<'a>(m: &tree_sitter::QueryMatch<'_, 'a>, idx: u32, src: &'a [u8]) ->
     cap_node(m, idx).map(|n| node_text(n, src))
 }
 
-fn make_call_ref(name: &str, qualifier: Option<String>, line: usize, source: Option<String>) -> Reference {
-    Reference { kind: RefKind::Call, target_name: name.to_string(), target_qualifier: qualifier, line, source_symbol_name: source }
+fn make_call_ref(
+    name: &str,
+    qualifier: Option<String>,
+    line: usize,
+    source: Option<String>,
+) -> Reference {
+    Reference {
+        kind: RefKind::Call,
+        target_name: name.to_string(),
+        target_qualifier: qualifier,
+        line,
+        source_symbol_name: source,
+    }
 }
 
 fn extract_qualified(text: &str) -> (String, Option<String>) {
@@ -116,27 +135,45 @@ fn extract_qualified(text: &str) -> (String, Option<String>) {
     (name, Some(text.to_string()))
 }
 
-fn build_fn_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src: &[u8], node_idx: u32, params_idx: u32) -> Symbol {
+fn build_fn_sym(
+    m: &tree_sitter::QueryMatch,
+    name_node: tree_sitter::Node,
+    src: &[u8],
+    node_idx: u32,
+    params_idx: u32,
+) -> Symbol {
     let name = node_text(name_node, src).to_string();
     let container = cap_node(m, node_idx).unwrap_or(name_node);
     let params = cap_text(m, params_idx, src).unwrap_or("");
     Symbol {
-        name, kind: SymbolKind::Function,
-        line_start: container.start_position().row, line_end: container.end_position().row,
-        parent_name: None, visibility: None, signature: Some(format!("function {}", params)),
+        name,
+        kind: SymbolKind::Function,
+        line_start: container.start_position().row,
+        line_end: container.end_position().row,
+        parent_name: None,
+        visibility: None,
+        signature: Some(format!("function {}", params)),
         is_test: false,
     }
 }
 
-fn build_method_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src: &[u8], node_idx: u32, params_idx: u32) -> Symbol {
+fn build_method_sym(
+    m: &tree_sitter::QueryMatch,
+    name_node: tree_sitter::Node,
+    src: &[u8],
+    node_idx: u32,
+    params_idx: u32,
+) -> Symbol {
     let name = node_text(name_node, src).to_string();
     let container = cap_node(m, node_idx).unwrap_or(name_node);
     let params = cap_text(m, params_idx, src).unwrap_or("");
     let parent = find_parent_class(name_node, src);
     let is_test = is_php_test(&name, parent.as_deref());
     Symbol {
-        name, kind: SymbolKind::Method,
-        line_start: container.start_position().row, line_end: container.end_position().row,
+        name,
+        kind: SymbolKind::Method,
+        line_start: container.start_position().row,
+        line_end: container.end_position().row,
         parent_name: parent,
         visibility: extract_php_visibility(container, src),
         signature: Some(format!("function {}", params)),
@@ -144,13 +181,23 @@ fn build_method_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, s
     }
 }
 
-fn build_type_sym(m: &tree_sitter::QueryMatch, name_node: tree_sitter::Node, src: &[u8], node_idx: u32, kind: SymbolKind) -> Symbol {
+fn build_type_sym(
+    m: &tree_sitter::QueryMatch,
+    name_node: tree_sitter::Node,
+    src: &[u8],
+    node_idx: u32,
+    kind: SymbolKind,
+) -> Symbol {
     let name = node_text(name_node, src).to_string();
     let container = cap_node(m, node_idx).unwrap_or(name_node);
     Symbol {
-        name, kind,
-        line_start: container.start_position().row, line_end: container.end_position().row,
-        parent_name: None, visibility: None, signature: None,
+        name,
+        kind,
+        line_start: container.start_position().row,
+        line_end: container.end_position().row,
+        parent_name: None,
+        visibility: None,
+        signature: None,
         is_test: false,
     }
 }
@@ -166,7 +213,12 @@ fn is_php_test(method_name: &str, parent_class: Option<&str>) -> bool {
     }
 }
 
-fn parse_symbols(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, symbols: &mut Vec<Symbol>) -> Result<()> {
+fn parse_symbols(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &mut Vec<Symbol>,
+) -> Result<()> {
     let query = Query::new(lang, SYMBOL_QUERY).context("Invalid PHP symbol query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -188,17 +240,31 @@ fn parse_symbols(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Langua
                 i if i == fn_n => Some(build_fn_sym(m, cap.node, src, fn_nd, fn_p)),
                 i if i == mn => Some(build_method_sym(m, cap.node, src, mnd, mp)),
                 i if i == cn => Some(build_type_sym(m, cap.node, src, cnd, SymbolKind::Class)),
-                i if i == iface_n => Some(build_type_sym(m, cap.node, src, iface_nd, SymbolKind::Interface)),
+                i if i == iface_n => Some(build_type_sym(
+                    m,
+                    cap.node,
+                    src,
+                    iface_nd,
+                    SymbolKind::Interface,
+                )),
                 i if i == tn => Some(build_type_sym(m, cap.node, src, tnd, SymbolKind::Trait)),
                 _ => None,
             };
-            if let Some(s) = sym { symbols.push(s); }
+            if let Some(s) = sym {
+                symbols.push(s);
+            }
         }
     });
     Ok(())
 }
 
-fn parse_calls(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, symbols: &[Symbol], references: &mut Vec<Reference>) -> Result<()> {
+fn parse_calls(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    symbols: &[Symbol],
+    references: &mut Vec<Reference>,
+) -> Result<()> {
     let query = Query::new(lang, CALL_QUERY).context("Invalid PHP call query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -234,7 +300,12 @@ fn parse_calls(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language
     Ok(())
 }
 
-fn parse_uses(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, imports: &mut Vec<Import>) -> Result<()> {
+fn parse_uses(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    imports: &mut Vec<Import>,
+) -> Result<()> {
     let query = Query::new(lang, USE_QUERY).context("Invalid PHP use query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -245,21 +316,52 @@ fn parse_uses(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language,
             let full_path = node_text(cap.node, src).to_string();
             let alias = alias_idx.and_then(|idx| cap_text(m, idx, src).map(|s| s.to_string()));
             let local_name = alias.clone().unwrap_or_else(|| {
-                full_path.rsplit('\\').next().unwrap_or(&full_path).to_string()
+                full_path
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&full_path)
+                    .to_string()
             });
-            imports.push(Import { local_name, full_path, alias, line: cap.node.start_position().row });
+            imports.push(Import {
+                local_name,
+                full_path,
+                alias,
+                line: cap.node.start_position().row,
+            });
         }
     });
     Ok(())
 }
 
-fn emit_inh_ref(cap: &tree_sitter::QueryCapture, src: &[u8], kind: RefKind, cls: &Option<String>, qualified: bool, refs: &mut Vec<Reference>) {
+fn emit_inh_ref(
+    cap: &tree_sitter::QueryCapture,
+    src: &[u8],
+    kind: RefKind,
+    cls: &Option<String>,
+    qualified: bool,
+    refs: &mut Vec<Reference>,
+) {
     let text = node_text(cap.node, src);
-    let (name, qualifier) = if qualified { extract_qualified(text) } else { (text.to_string(), None) };
-    refs.push(Reference { kind, target_name: name, target_qualifier: qualifier, line: cap.node.start_position().row, source_symbol_name: cls.clone() });
+    let (name, qualifier) = if qualified {
+        extract_qualified(text)
+    } else {
+        (text.to_string(), None)
+    };
+    refs.push(Reference {
+        kind,
+        target_name: name,
+        target_qualifier: qualifier,
+        line: cap.node.start_position().row,
+        source_symbol_name: cls.clone(),
+    });
 }
 
-fn parse_inheritance(root: tree_sitter::Node, src: &[u8], lang: &tree_sitter::Language, references: &mut Vec<Reference>) -> Result<()> {
+fn parse_inheritance(
+    root: tree_sitter::Node,
+    src: &[u8],
+    lang: &tree_sitter::Language,
+    references: &mut Vec<Reference>,
+) -> Result<()> {
     let query = Query::new(lang, INHERITANCE_QUERY).context("Invalid PHP inheritance query")?;
 
     for_each_match(&query, root, src, |m, q, _| {
@@ -290,10 +392,15 @@ fn find_parent_class<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> Option<S
     let mut current = node.parent();
     while let Some(parent) = current {
         let kind = parent.kind();
-        if kind == "class_declaration" || kind == "trait_declaration" || kind == "interface_declaration" {
+        if kind == "class_declaration"
+            || kind == "trait_declaration"
+            || kind == "interface_declaration"
+        {
             for i in 0..parent.child_count() {
                 if let Some(child) = parent.child(i) {
-                    if child.kind() == "name" { return Some(node_text(child, src).to_string()); }
+                    if child.kind() == "name" {
+                        return Some(node_text(child, src).to_string());
+                    }
                 }
             }
         }
@@ -306,7 +413,10 @@ fn extract_php_visibility(node: tree_sitter::Node, src: &[u8]) -> Option<String>
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let kind = child.kind();
-            if kind == "visibility_modifier" || kind == "static_modifier" || kind == "abstract_modifier" {
+            if kind == "visibility_modifier"
+                || kind == "static_modifier"
+                || kind == "abstract_modifier"
+            {
                 return Some(node_text(child, src).to_string());
             }
         }
@@ -322,10 +432,30 @@ mod tests {
     fn test_parse_php_class() {
         let src = "<?php\nclass Foo extends Bar implements Baz {\n    public function hello() { return 1; }\n}\n";
         let result = parse(src).unwrap();
-        assert!(result.symbols.iter().any(|s| s.name == "Foo" && s.kind == SymbolKind::Class));
-        assert!(result.symbols.iter().any(|s| s.name == "hello" && s.kind == SymbolKind::Method));
-        assert!(result.references.iter().any(|r| r.target_name == "Bar" && r.kind == RefKind::Inherit));
-        assert!(result.references.iter().any(|r| r.target_name == "Baz" && r.kind == RefKind::Implement));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Foo" && s.kind == SymbolKind::Class)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "hello" && s.kind == SymbolKind::Method)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Bar" && r.kind == RefKind::Inherit)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Baz" && r.kind == RefKind::Implement)
+        );
     }
 
     #[test]
@@ -341,7 +471,12 @@ mod tests {
     fn test_parse_php_calls() {
         let src = "<?php\nfunction process() {\n    $x = calculate(10);\n    $user->save();\n    User::find(1);\n}\n";
         let result = parse(src).unwrap();
-        let names: Vec<&str> = result.references.iter().filter(|r| r.kind == RefKind::Call).map(|r| r.target_name.as_str()).collect();
+        let names: Vec<&str> = result
+            .references
+            .iter()
+            .filter(|r| r.kind == RefKind::Call)
+            .map(|r| r.target_name.as_str())
+            .collect();
         assert!(names.contains(&"calculate"));
         assert!(names.contains(&"save"));
         assert!(names.contains(&"find"));

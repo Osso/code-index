@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify_debouncer_mini::notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
+use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 
 use crate::db::Database;
 use crate::indexer;
@@ -29,8 +29,8 @@ pub fn watch(db_path: &str, dir: &str) -> Result<()> {
 
     let (tx, rx) = mpsc::channel::<DebounceEventResult>();
 
-    let mut debouncer = new_debouncer(Duration::from_secs(1), tx)
-        .context("Failed to create file watcher")?;
+    let mut debouncer =
+        new_debouncer(Duration::from_secs(1), tx).context("Failed to create file watcher")?;
 
     debouncer
         .watcher()
@@ -54,9 +54,7 @@ pub fn watch(db_path: &str, dir: &str) -> Result<()> {
     Ok(())
 }
 
-fn collect_changed_files(
-    events: &[notify_debouncer_mini::DebouncedEvent],
-) -> Vec<PathBuf> {
+fn collect_changed_files(events: &[notify_debouncer_mini::DebouncedEvent]) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     let mut files = Vec::new();
     for event in events {
@@ -129,8 +127,8 @@ fn handle_changes(db_path: &str, files: &[PathBuf]) {
 
 fn reindex_file(db: &Database, path: &Path, lang: Language) -> Result<bool> {
     let path_str = path.to_str().context("Non-UTF8 path")?;
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {path_str}"))?;
+    let source =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {path_str}"))?;
     let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
     if let Some(existing) = db.get_file_hash(path_str)? {

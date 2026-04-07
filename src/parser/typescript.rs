@@ -639,22 +639,30 @@ mod tests {
     fn test_parse_ts_class() {
         let src = "class Svc extends Base implements Ser {\n    public getName(): string { return ''; }\n}\n";
         let result = parse(src).unwrap();
-        assert!(result
-            .symbols
-            .iter()
-            .any(|s| s.name == "Svc" && s.kind == SymbolKind::Class));
-        assert!(result
-            .symbols
-            .iter()
-            .any(|s| s.name == "getName" && s.kind == SymbolKind::Method));
-        assert!(result
-            .references
-            .iter()
-            .any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit));
-        assert!(result
-            .references
-            .iter()
-            .any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Svc" && s.kind == SymbolKind::Class)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "getName" && s.kind == SymbolKind::Method)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Base" && r.kind == RefKind::Inherit)
+        );
+        assert!(
+            result
+                .references
+                .iter()
+                .any(|r| r.target_name == "Ser" && r.kind == RefKind::Implement)
+        );
     }
 
     #[test]
