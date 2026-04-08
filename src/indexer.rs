@@ -19,6 +19,9 @@ pub fn index_directory(db: &Database, dir: &str, full: bool) -> Result<IndexStat
     let mut stats = IndexStats::default();
 
     db.begin_transaction()?;
+    if full {
+        db.reset_index()?;
+    }
 
     for entry in walker {
         let entry = match entry {

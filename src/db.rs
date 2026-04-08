@@ -143,6 +143,15 @@ impl Database {
         Ok(())
     }
 
+    /// Clear the entire index so a full reindex starts from a clean graph.
+    pub fn reset_index(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM refs", [])?;
+        self.conn.execute("DELETE FROM imports", [])?;
+        self.conn.execute("DELETE FROM symbols", [])?;
+        self.conn.execute("DELETE FROM files", [])?;
+        Ok(())
+    }
+
     /// Insert a symbol. Returns the symbol ID.
     pub fn insert_symbol(
         &self,
@@ -347,5 +356,36 @@ mod tests {
 
         let (_, sym_count, _) = db.get_stats().unwrap();
         assert_eq!(sym_count, 0);
+    }
+
+    #[test]
+    fn test_reset_index_clears_files_symbols_and_refs() {
+        let db = Database::open_in_memory().unwrap();
+        let file_id = db.upsert_file("/test.rs", "abc", "rust").unwrap();
+
+        let sym = Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            line_start: 1,
+            line_end: 5,
+            parent_name: None,
+            visibility: None,
+            signature: None,
+            is_test: false,
+        };
+        let sym_id = db.insert_symbol(file_id, &sym, None).unwrap();
+        let reference = Reference {
+            kind: RefKind::Call,
+            target_name: "bar".to_string(),
+            target_qualifier: None,
+            line: 2,
+            source_symbol_name: Some("foo".to_string()),
+        };
+        db.insert_ref(file_id, &reference, Some(sym_id)).unwrap();
+
+        db.reset_index().unwrap();
+
+        let (files, symbols, refs) = db.get_stats().unwrap();
+        assert_eq!((files, symbols, refs), (0, 0, 0));
     }
 }
