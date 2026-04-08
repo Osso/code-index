@@ -4,6 +4,9 @@ use tree_sitter::Query;
 use crate::model::{Import, ParseResult, RefKind, Reference, Symbol, SymbolKind};
 use crate::parser::{find_enclosing_symbol, for_each_match, node_text};
 
+mod macro_calls;
+use macro_calls::scan_macro_calls;
+
 const SYMBOL_QUERY: &str = r#"
 (function_item
     name: (identifier) @fn_name
@@ -40,10 +43,7 @@ const CALL_QUERY: &str = r#"
 ) @method_call_node
 
 (call_expression
-    function: (scoped_identifier
-        name: (identifier) @scoped_name
-        path: (identifier)? @scoped_path
-    )
+    function: (scoped_identifier) @scoped_function
 ) @scoped_call_node
 
 (macro_invocation
@@ -257,40 +257,118 @@ fn parse_calls(
     references: &mut Vec<Reference>,
 ) -> Result<()> {
     let query = Query::new(lang, CALL_QUERY).context("Invalid call query")?;
-
-    for_each_match(&query, root, src, |m, q, _| {
-        let call_name_idx = q.capture_index_for_name("call_name").unwrap();
-        let method_name_idx = q.capture_index_for_name("method_name").unwrap();
-        let scoped_name_idx = q.capture_index_for_name("scoped_name").unwrap();
-        let scoped_path_idx = q.capture_index_for_name("scoped_path").unwrap();
-        let macro_name_idx = q.capture_index_for_name("macro_name").unwrap();
-
-        for cap in m.captures {
-            let line = cap.node.start_position().row;
-            let source_sym = find_enclosing_symbol(symbols, line);
-
-            if cap.index == call_name_idx || cap.index == method_name_idx {
-                references.push(make_call_ref(
-                    node_text(cap.node, src),
-                    None,
-                    line,
-                    source_sym,
-                ));
-            } else if cap.index == scoped_name_idx {
-                let qualifier = capture_text_by_idx(m, scoped_path_idx, src).map(|s| s.to_string());
-                references.push(make_call_ref(
-                    node_text(cap.node, src),
-                    qualifier,
-                    line,
-                    source_sym,
-                ));
-            } else if cap.index == macro_name_idx {
-                let name = format!("{}!", node_text(cap.node, src));
-                references.push(make_call_ref(&name, None, line, source_sym));
-            }
-        }
+    for_each_match(&query, root, src, |query_match, query, _| {
+        parse_call_match(query_match, query, src, symbols, references)
     });
     Ok(())
+}
+
+fn parse_call_match(
+    query_match: &tree_sitter::QueryMatch,
+    query: &Query,
+    src: &[u8],
+    symbols: &[Symbol],
+    references: &mut Vec<Reference>,
+) {
+    let call_name_idx = query.capture_index_for_name("call_name").unwrap();
+    let method_name_idx = query.capture_index_for_name("method_name").unwrap();
+    let scoped_function_idx = query.capture_index_for_name("scoped_function").unwrap();
+    let macro_name_idx = query.capture_index_for_name("macro_name").unwrap();
+    let macro_node_idx = query.capture_index_for_name("macro_node").unwrap();
+
+    for capture in query_match.captures {
+        let line = capture.node.start_position().row;
+        let source_symbol_name = find_enclosing_symbol(symbols, line);
+
+        if capture.index == call_name_idx || capture.index == method_name_idx {
+            references.push(make_call_ref(
+                node_text(capture.node, src),
+                None,
+                line,
+                source_symbol_name,
+            ));
+            continue;
+        }
+
+        if capture.index == scoped_function_idx {
+            let (name, qualifier) = split_scoped_call(node_text(capture.node, src));
+            references.push(make_call_ref(name, qualifier, line, source_symbol_name));
+            continue;
+        }
+
+        if capture.index == macro_name_idx {
+            push_macro_refs(
+                query_match,
+                src,
+                references,
+                macro_name_idx,
+                macro_node_idx,
+                source_symbol_name,
+            );
+        }
+    }
+}
+
+fn split_scoped_call(path: &str) -> (&str, Option<String>) {
+    match path.rsplit_once("::") {
+        Some((qualifier, name)) => (name, Some(qualifier.to_string())),
+        None => (path, None),
+    }
+}
+
+fn extract_macro_body_calls(
+    macro_node: tree_sitter::Node,
+    src: &[u8],
+    source_symbol_name: Option<String>,
+) -> Vec<Reference> {
+    let Some(token_tree) = find_macro_token_tree(macro_node) else {
+        return Vec::new();
+    };
+    let macro_body = node_text(token_tree, src);
+    let base_line = token_tree.start_position().row;
+    scan_macro_calls(macro_body)
+        .into_iter()
+        .map(|call| {
+            make_call_ref(
+                &call.name,
+                call.qualifier,
+                base_line + call.line_offset,
+                source_symbol_name.clone(),
+            )
+        })
+        .collect()
+}
+
+fn push_macro_refs(
+    query_match: &tree_sitter::QueryMatch,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    macro_name_idx: u32,
+    macro_node_idx: u32,
+    source_symbol_name: Option<String>,
+) {
+    let macro_name = capture_text_by_idx(query_match, macro_name_idx, src).unwrap_or("");
+    let macro_node = capture_node_by_idx(query_match, macro_node_idx).unwrap();
+    let line = macro_node.start_position().row;
+    let target_name = format!("{macro_name}!");
+
+    references.push(make_call_ref(
+        &target_name,
+        None,
+        line,
+        source_symbol_name.clone(),
+    ));
+    references.extend(
+        extract_macro_body_calls(macro_node, src, source_symbol_name)
+            .into_iter()
+            .filter(|call| call.target_name != target_name),
+    );
+}
+
+fn find_macro_token_tree(macro_node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    (0..macro_node.child_count())
+        .filter_map(|index| macro_node.child(index))
+        .find(|child| child.kind() == "token_tree")
 }
 
 fn parse_uses(
@@ -451,5 +529,39 @@ mod tests {
         assert!(call_names.contains(&"foo"));
         assert!(call_names.contains(&"baz"));
         assert!(call_names.contains(&"println!"));
+    }
+
+    #[test]
+    fn test_parse_scoped_call_uses_full_qualifier() {
+        let src = "fn main() {\n    crate::combat::resolve_hit();\n}\n";
+        let result = parse(src).unwrap();
+        let call = result
+            .references
+            .iter()
+            .find(|reference| reference.target_name == "resolve_hit")
+            .unwrap();
+        assert_eq!(call.target_qualifier.as_deref(), Some("crate::combat"));
+    }
+
+    #[test]
+    fn test_parse_macro_body_calls() {
+        let src = "fn main() {\n    assert_eq!(melee::resolve_melee_outcome(&c, 0), MeleeOutcome::Hit);\n    assert!(leash.should_evade(target));\n}\n";
+        let result = parse(src).unwrap();
+        let call_names: Vec<&str> = result
+            .references
+            .iter()
+            .map(|reference| reference.target_name.as_str())
+            .collect();
+        assert!(call_names.contains(&"assert_eq!"));
+        assert!(call_names.contains(&"assert!"));
+        assert!(call_names.contains(&"resolve_melee_outcome"));
+        assert!(call_names.contains(&"should_evade"));
+
+        let scoped_call = result
+            .references
+            .iter()
+            .find(|reference| reference.target_name == "resolve_melee_outcome")
+            .unwrap();
+        assert_eq!(scoped_call.target_qualifier.as_deref(), Some("melee"));
     }
 }
