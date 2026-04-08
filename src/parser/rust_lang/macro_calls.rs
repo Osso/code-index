@@ -44,6 +44,38 @@ pub(super) fn scan_macro_calls(text: &str) -> Vec<MacroCall> {
     calls
 }
 
+pub(super) fn scan_bare_function_refs(text: &str) -> Vec<MacroCall> {
+    let bytes = text.as_bytes();
+    let mut refs = Vec::new();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if starts_line_comment(bytes, index) {
+            index = skip_line_comment(bytes, index);
+            continue;
+        }
+        if starts_block_comment(bytes, index) {
+            index = skip_block_comment(bytes, index);
+            continue;
+        }
+        if starts_quoted_literal(bytes, index) {
+            index = skip_quoted_literal(bytes, index);
+            continue;
+        }
+        if starts_raw_string(bytes, index) {
+            index = skip_raw_string(bytes, index);
+            continue;
+        }
+        if is_ident_start(bytes[index]) {
+            index = next_bare_ref_scan_index(text, bytes, index, &mut refs);
+            continue;
+        }
+        index += 1;
+    }
+
+    refs
+}
+
 fn next_scan_index(text: &str, bytes: &[u8], start: usize, calls: &mut Vec<MacroCall>) -> usize {
     let Some(candidate) = parse_call_candidate(text, bytes, start) else {
         return start + 1;
@@ -54,6 +86,32 @@ fn next_scan_index(text: &str, bytes: &[u8], start: usize, calls: &mut Vec<Macro
     }
 
     calls.push(MacroCall {
+        name: candidate.name,
+        qualifier: candidate.qualifier,
+        line_offset: count_newlines(&bytes[..start]),
+    });
+    next.max(start + 1)
+}
+
+fn next_bare_ref_scan_index(
+    text: &str,
+    bytes: &[u8],
+    start: usize,
+    refs: &mut Vec<MacroCall>,
+) -> usize {
+    let Some(candidate) = parse_call_candidate(text, bytes, start) else {
+        return start + 1;
+    };
+    let next = skip_ascii_whitespace(bytes, candidate.next);
+    if previous_non_whitespace(bytes, start) == Some(b'.')
+        || next < bytes.len() && matches!(bytes[next], b'(' | b'!')
+        || is_plain_keyword(&candidate.segments)
+        || !looks_like_function_name(&candidate.name)
+    {
+        return next.max(start + 1);
+    }
+
+    refs.push(MacroCall {
         name: candidate.name,
         qualifier: candidate.qualifier,
         line_offset: count_newlines(&bytes[..start]),
@@ -115,6 +173,12 @@ fn qualifier_for_call(bytes: &[u8], start: usize, segments: &[String]) -> Option
 
 fn is_plain_keyword(segments: &[String]) -> bool {
     segments.len() == 1 && RUST_KEYWORDS.contains(&segments[0].as_str())
+}
+
+fn looks_like_function_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some('_' | 'a'..='z'))
+        && chars.all(|ch| ch == '_' || ch.is_ascii_lowercase() || ch.is_ascii_digit())
 }
 
 fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
@@ -293,6 +357,28 @@ mod tests {
                 MacroCall {
                     name: "from_roll".to_string(),
                     qualifier: Some("Self".to_string()),
+                    line_offset: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_bare_function_refs_keeps_scoped_system_names() {
+        let refs = scan_bare_function_refs(
+            "(Update, (process_login_requests, auth::process_register_requests.run_if(in_state(GameState::Playing))))",
+        );
+        assert_eq!(
+            refs,
+            vec![
+                MacroCall {
+                    name: "process_login_requests".to_string(),
+                    qualifier: None,
+                    line_offset: 0,
+                },
+                MacroCall {
+                    name: "process_register_requests".to_string(),
+                    qualifier: Some("auth".to_string()),
                     line_offset: 0,
                 },
             ]

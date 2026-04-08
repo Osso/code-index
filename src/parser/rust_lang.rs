@@ -5,7 +5,7 @@ use crate::model::{Import, ParseResult, RefKind, Reference, Symbol, SymbolKind};
 use crate::parser::{find_enclosing_symbol, for_each_match, node_text};
 
 mod macro_calls;
-use macro_calls::scan_macro_calls;
+use macro_calls::{scan_bare_function_refs, scan_macro_calls};
 
 const SYMBOL_QUERY: &str = r#"
 (function_item
@@ -272,6 +272,7 @@ fn parse_call_match(
 ) {
     let call_name_idx = query.capture_index_for_name("call_name").unwrap();
     let method_name_idx = query.capture_index_for_name("method_name").unwrap();
+    let method_call_node_idx = query.capture_index_for_name("method_call_node").unwrap();
     let scoped_function_idx = query.capture_index_for_name("scoped_function").unwrap();
     let macro_name_idx = query.capture_index_for_name("macro_name").unwrap();
     let macro_node_idx = query.capture_index_for_name("macro_node").unwrap();
@@ -280,11 +281,29 @@ fn parse_call_match(
         let line = capture.node.start_position().row;
         let source_symbol_name = find_enclosing_symbol(symbols, line);
 
-        if capture.index == call_name_idx || capture.index == method_name_idx {
+        if capture.index == call_name_idx {
             references.push(make_call_ref(
                 node_text(capture.node, src),
                 None,
                 line,
+                source_symbol_name,
+            ));
+            continue;
+        }
+
+        if capture.index == method_name_idx {
+            let method_name = node_text(capture.node, src);
+            references.push(make_call_ref(
+                method_name,
+                None,
+                line,
+                source_symbol_name.clone(),
+            ));
+            references.extend(extract_registration_function_refs(
+                query_match,
+                method_name,
+                method_call_node_idx,
+                src,
                 source_symbol_name,
             ));
             continue;
@@ -307,6 +326,49 @@ fn parse_call_match(
             );
         }
     }
+}
+
+fn extract_registration_function_refs(
+    query_match: &tree_sitter::QueryMatch,
+    method_name: &str,
+    method_call_node_idx: u32,
+    src: &[u8],
+    source_symbol_name: Option<String>,
+) -> Vec<Reference> {
+    let Some(arg_node) = registration_argument_node(query_match, method_name, method_call_node_idx)
+    else {
+        return Vec::new();
+    };
+    let base_line = arg_node.start_position().row;
+    scan_bare_function_refs(node_text(arg_node, src))
+        .into_iter()
+        .map(|call| {
+            make_call_ref(
+                &call.name,
+                call.qualifier,
+                base_line + call.line_offset,
+                source_symbol_name.clone(),
+            )
+        })
+        .collect()
+}
+
+fn registration_argument_node<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    method_name: &str,
+    method_call_node_idx: u32,
+) -> Option<tree_sitter::Node<'a>> {
+    let call_node = capture_node_by_idx(query_match, method_call_node_idx)?;
+    let args_node = (0..call_node.child_count())
+        .filter_map(|index| call_node.child(index))
+        .find(|child| child.kind() == "arguments")?;
+
+    let arg_index = match method_name {
+        "add_systems" => 1,
+        "add_observer" | "observe" => 0,
+        _ => return None,
+    };
+    args_node.named_child(arg_index)
 }
 
 fn split_scoped_call(path: &str) -> (&str, Option<String>) {
@@ -563,5 +625,37 @@ mod tests {
             .find(|reference| reference.target_name == "resolve_melee_outcome")
             .unwrap();
         assert_eq!(scoped_call.target_qualifier.as_deref(), Some("melee"));
+    }
+
+    #[test]
+    fn test_parse_bevy_system_registration_refs() {
+        let src = r#"
+fn plugin(app: &mut App) {
+    app.add_systems(Update, (process_login_requests, auth::process_register_requests));
+}
+
+fn process_login_requests() {}
+
+mod auth {
+    pub fn process_register_requests() {}
+}
+"#;
+        let result = parse(src).unwrap();
+        let call_names: Vec<&str> = result
+            .references
+            .iter()
+            .map(|reference| reference.target_name.as_str())
+            .collect();
+
+        assert!(call_names.contains(&"add_systems"));
+        assert!(call_names.contains(&"process_login_requests"));
+        assert!(call_names.contains(&"process_register_requests"));
+
+        let scoped_ref = result
+            .references
+            .iter()
+            .find(|reference| reference.target_name == "process_register_requests")
+            .unwrap();
+        assert_eq!(scoped_ref.target_qualifier.as_deref(), Some("auth"));
     }
 }
