@@ -422,7 +422,11 @@ fn cmd_project_list() -> Result<()> {
     }
     for (name, entry) in &config.projects {
         let db_file = std::path::Path::new(&entry.path).join(".code-index.db");
-        let status = if db_file.exists() { "indexed" } else { "not indexed" };
+        let status = if db_file.exists() {
+            "indexed"
+        } else {
+            "not indexed"
+        };
         println!("{name}: {} ({status})", entry.path);
     }
     Ok(())

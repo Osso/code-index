@@ -426,14 +426,23 @@ fn format_tested_by(tests: &[crate::model::StoredSymbol]) -> String {
     header + &lines.join("\n")
 }
 
-fn format_symbol_list(symbols: &[crate::model::StoredSymbol], empty_msg: &str, header: &str) -> String {
+fn format_symbol_list(
+    symbols: &[crate::model::StoredSymbol],
+    empty_msg: &str,
+    header: &str,
+) -> String {
     if symbols.is_empty() {
         return empty_msg.to_string();
     }
     let header = format!("{} {}:\n", symbols.len(), header);
     let lines: Vec<String> = symbols
         .iter()
-        .map(|s| format!("  {} {} in {}:{}", s.kind, s.name, s.file_path, s.line_start))
+        .map(|s| {
+            format!(
+                "  {} {} in {}:{}",
+                s.kind, s.name, s.file_path, s.line_start
+            )
+        })
         .collect();
     header + &lines.join("\n")
 }
@@ -469,7 +478,11 @@ fn format_imported_by(entries: &[crate::model::ImportedByEntry]) -> String {
 }
 
 fn format_dead_code(symbols: &[crate::model::StoredSymbol]) -> String {
-    format_symbol_list(symbols, "No dead code found.", "potentially unused functions")
+    format_symbol_list(
+        symbols,
+        "No dead code found.",
+        "potentially unused functions",
+    )
 }
 
 #[tool_handler(router = self.tool_router)]

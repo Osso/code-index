@@ -487,10 +487,7 @@ fn query_imports(
 
 type SymbolTarget = (String, String, String, i64);
 
-fn query_symbol_candidates(
-    conn: &rusqlite::Connection,
-    name: &str,
-) -> Result<Vec<SymbolTarget>> {
+fn query_symbol_candidates(conn: &rusqlite::Connection, name: &str) -> Result<Vec<SymbolTarget>> {
     let mut stmt = conn.prepare(
         "SELECT f.path, s.name, s.kind, s.line_start
          FROM symbols s
@@ -505,10 +502,7 @@ fn query_symbol_candidates(
     .context("Failed to query symbol candidates")
 }
 
-fn pick_best_candidate(
-    candidates: Vec<SymbolTarget>,
-    full_path: &str,
-) -> Option<SymbolTarget> {
+fn pick_best_candidate(candidates: Vec<SymbolTarget>, full_path: &str) -> Option<SymbolTarget> {
     if candidates.len() == 1 {
         return candidates.into_iter().next();
     }
