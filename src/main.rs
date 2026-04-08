@@ -388,37 +388,42 @@ fn cmd_status(path: Option<&str>) -> Result<()> {
 
 fn cmd_project(action: ProjectAction) -> Result<()> {
     match action {
-        ProjectAction::Add { name, path } => {
-            let dir = match path {
-                Some(p) => std::path::PathBuf::from(p),
-                None => std::env::current_dir()?,
-            };
-            config::add_project(&name, &dir)?;
-            println!("Registered project '{}' at {}", name, dir.display());
-        }
-        ProjectAction::Remove { name } => {
-            if config::remove_project(&name)? {
-                println!("Removed project '{name}'");
-            } else {
-                println!("Project '{name}' not found");
-            }
-        }
-        ProjectAction::List => {
-            let config = config::load()?;
-            if config.projects.is_empty() {
-                println!("No projects registered.");
-            } else {
-                for (name, entry) in &config.projects {
-                    let db_file = std::path::Path::new(&entry.path).join(".code-index.db");
-                    let status = if db_file.exists() {
-                        "indexed"
-                    } else {
-                        "not indexed"
-                    };
-                    println!("{name}: {} ({status})", entry.path);
-                }
-            }
-        }
+        ProjectAction::Add { name, path } => cmd_project_add(&name, path)?,
+        ProjectAction::Remove { name } => cmd_project_remove(&name)?,
+        ProjectAction::List => cmd_project_list()?,
+    }
+    Ok(())
+}
+
+fn cmd_project_add(name: &str, path: Option<String>) -> Result<()> {
+    let dir = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    config::add_project(name, &dir)?;
+    println!("Registered project '{}' at {}", name, dir.display());
+    Ok(())
+}
+
+fn cmd_project_remove(name: &str) -> Result<()> {
+    if config::remove_project(name)? {
+        println!("Removed project '{name}'");
+    } else {
+        println!("Project '{name}' not found");
+    }
+    Ok(())
+}
+
+fn cmd_project_list() -> Result<()> {
+    let config = config::load()?;
+    if config.projects.is_empty() {
+        println!("No projects registered.");
+        return Ok(());
+    }
+    for (name, entry) in &config.projects {
+        let db_file = std::path::Path::new(&entry.path).join(".code-index.db");
+        let status = if db_file.exists() { "indexed" } else { "not indexed" };
+        println!("{name}: {} ({status})", entry.path);
     }
     Ok(())
 }

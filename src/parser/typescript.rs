@@ -166,19 +166,9 @@ fn build_fn_sym(
     ni: u32,
     pi: u32,
 ) -> Symbol {
-    let name = node_text(nn, src).to_string();
     let fn_node = cap_node(m, ni).unwrap_or(nn);
-    let params = cap_text(m, pi, src).unwrap_or("");
-    Symbol {
-        name,
-        kind: SymbolKind::Function,
-        line_start: fn_node.start_position().row,
-        line_end: fn_node.end_position().row,
-        parent_name: None,
-        visibility: extract_ts_export(fn_node),
-        signature: Some(format!("function {}", params)),
-        is_test: false,
-    }
+    let vis = extract_ts_export(fn_node);
+    build_arrow_sym(m, nn, src, ni, pi, "function", vis)
 }
 
 fn build_class_sym(
@@ -323,7 +313,7 @@ fn parse_arrow_functions(
 
         for cap in m.captures {
             if cap.index == an {
-                symbols.push(build_arrow_sym(m, cap.node, src, and, ap, "const =>"));
+                symbols.push(build_arrow_sym(m, cap.node, src, and, ap, "const =>", None));
             } else if cap.index == fen {
                 symbols.push(build_arrow_sym(
                     m,
@@ -332,11 +322,55 @@ fn parse_arrow_functions(
                     fend,
                     fep,
                     "const function",
+                    None,
                 ));
             }
         }
     });
     Ok(())
+}
+
+fn find_test_callback_node<'a>(
+    m: &tree_sitter::QueryMatch<'_, 'a>,
+    q: &Query,
+    src: &[u8],
+) -> Option<tree_sitter::Node<'a>> {
+    if let (Some(fn_idx), Some(cb_idx)) = (
+        q.capture_index_for_name("test_fn"),
+        q.capture_index_for_name("test_cb"),
+    ) {
+        if cap_text(m, fn_idx, src).is_some_and(is_ts_test_fn) {
+            return cap_node(m, cb_idx);
+        }
+    }
+
+    if let (Some(obj_idx), Some(prop_idx), Some(cb_idx)) = (
+        q.capture_index_for_name("test_obj"),
+        q.capture_index_for_name("test_prop"),
+        q.capture_index_for_name("test_member_cb"),
+    ) {
+        let obj = cap_text(m, obj_idx, src).unwrap_or("");
+        let prop = cap_text(m, prop_idx, src).unwrap_or("");
+        if is_ts_test_fn(obj) && is_ts_test_modifier(prop) {
+            return cap_node(m, cb_idx);
+        }
+    }
+
+    None
+}
+
+fn build_test_callback_sym(cb: tree_sitter::Node, sequence: usize) -> Symbol {
+    let line = cb.start_position().row;
+    Symbol {
+        name: format!("__ts_test_{}_{}", line, sequence),
+        kind: SymbolKind::Function,
+        line_start: line,
+        line_end: cb.end_position().row,
+        parent_name: None,
+        visibility: None,
+        signature: Some("test callback".to_string()),
+        is_test: true,
+    }
 }
 
 fn parse_test_callbacks(
@@ -349,50 +383,9 @@ fn parse_test_callbacks(
     let mut sequence = 0usize;
 
     for_each_match(&query, root, src, |m, q, _| {
-        let test_fn = q.capture_index_for_name("test_fn");
-        let test_cb = q.capture_index_for_name("test_cb");
-        let test_obj = q.capture_index_for_name("test_obj");
-        let test_prop = q.capture_index_for_name("test_prop");
-        let test_member_cb = q.capture_index_for_name("test_member_cb");
-
-        let mut callback_node = None;
-        let mut is_test = false;
-
-        if let (Some(fn_idx), Some(cb_idx)) = (test_fn, test_cb) {
-            if let Some(fn_name) = cap_text(m, fn_idx, src) {
-                if is_ts_test_fn(fn_name) {
-                    callback_node = cap_node(m, cb_idx);
-                    is_test = callback_node.is_some();
-                }
-            }
-        }
-
-        if !is_test {
-            if let (Some(obj_idx), Some(prop_idx), Some(cb_idx)) =
-                (test_obj, test_prop, test_member_cb)
-            {
-                let obj = cap_text(m, obj_idx, src).unwrap_or("");
-                let prop = cap_text(m, prop_idx, src).unwrap_or("");
-                if is_ts_test_fn(obj) && is_ts_test_modifier(prop) {
-                    callback_node = cap_node(m, cb_idx);
-                    is_test = callback_node.is_some();
-                }
-            }
-        }
-
-        if let Some(cb) = callback_node.filter(|_| is_test) {
+        if let Some(cb) = find_test_callback_node(m, q, src) {
             sequence += 1;
-            let line = cb.start_position().row;
-            symbols.push(Symbol {
-                name: format!("__ts_test_{}_{}", line, sequence),
-                kind: SymbolKind::Function,
-                line_start: line,
-                line_end: cb.end_position().row,
-                parent_name: None,
-                visibility: None,
-                signature: Some("test callback".to_string()),
-                is_test: true,
-            });
+            symbols.push(build_test_callback_sym(cb, sequence));
         }
     });
 
@@ -414,6 +407,7 @@ fn build_arrow_sym(
     ni: u32,
     pi: u32,
     prefix: &str,
+    visibility: Option<String>,
 ) -> Symbol {
     let name = node_text(nn, src).to_string();
     let fn_node = cap_node(m, ni).unwrap_or(nn);
@@ -424,7 +418,7 @@ fn build_arrow_sym(
         line_start: fn_node.start_position().row,
         line_end: fn_node.end_position().row,
         parent_name: None,
-        visibility: None,
+        visibility,
         signature: Some(format!("{} {}", prefix, params)),
         is_test: false,
     }
@@ -474,6 +468,44 @@ fn parse_calls(
     Ok(())
 }
 
+fn collect_named_imports(
+    m: &tree_sitter::QueryMatch,
+    src: &[u8],
+    name_idx: u32,
+    alias_idx: Option<u32>,
+    source_path: &str,
+    imports: &mut Vec<Import>,
+) {
+    for cap in m.captures.iter().filter(|c| c.index == name_idx) {
+        let name = node_text(cap.node, src).to_string();
+        let alias = alias_idx.and_then(|idx| cap_text(m, idx, src).map(|s| s.to_string()));
+        let local = alias.clone().unwrap_or_else(|| name.clone());
+        imports.push(Import {
+            local_name: local,
+            full_path: format!("{}.{}", source_path, name),
+            alias,
+            line: cap.node.start_position().row,
+        });
+    }
+}
+
+fn collect_default_import(
+    m: &tree_sitter::QueryMatch,
+    src: &[u8],
+    def_idx: u32,
+    source_path: &str,
+    imports: &mut Vec<Import>,
+) {
+    if let Some(cap) = m.captures.iter().find(|c| c.index == def_idx) {
+        imports.push(Import {
+            local_name: node_text(cap.node, src).to_string(),
+            full_path: format!("{}.default", source_path),
+            alias: None,
+            line: cap.node.start_position().row,
+        });
+    }
+}
+
 fn parse_imports(
     root: tree_sitter::Node,
     src: &[u8],
@@ -484,37 +516,22 @@ fn parse_imports(
 
     for_each_match(&query, root, src, |m, q, _| {
         let src_idx = q.capture_index_for_name("import_source").unwrap();
-        let name_idx = q.capture_index_for_name("import_name");
-        let alias_idx = q.capture_index_for_name("import_alias");
-        let def_idx = q.capture_index_for_name("default_import");
-
         let source_path = cap_text(m, src_idx, src)
             .map(|s| s.trim_matches(|c| c == '\'' || c == '"'))
             .unwrap_or("");
 
-        if let Some(ni) = name_idx {
-            for cap in m.captures.iter().filter(|c| c.index == ni) {
-                let name = node_text(cap.node, src).to_string();
-                let alias = alias_idx.and_then(|idx| cap_text(m, idx, src).map(|s| s.to_string()));
-                let local = alias.clone().unwrap_or_else(|| name.clone());
-                imports.push(Import {
-                    local_name: local,
-                    full_path: format!("{}.{}", source_path, name),
-                    alias,
-                    line: cap.node.start_position().row,
-                });
-            }
+        if let Some(ni) = q.capture_index_for_name("import_name") {
+            collect_named_imports(
+                m,
+                src,
+                ni,
+                q.capture_index_for_name("import_alias"),
+                source_path,
+                imports,
+            );
         }
-        if let Some(di) = def_idx {
-            if let Some(cap) = m.captures.iter().find(|c| c.index == di) {
-                let name = node_text(cap.node, src).to_string();
-                imports.push(Import {
-                    local_name: name,
-                    full_path: format!("{}.default", source_path),
-                    alias: None,
-                    line: cap.node.start_position().row,
-                });
-            }
+        if let Some(di) = q.capture_index_for_name("default_import") {
+            collect_default_import(m, src, di, source_path, imports);
         }
     });
     Ok(())

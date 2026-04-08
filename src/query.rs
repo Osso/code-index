@@ -141,64 +141,82 @@ fn find_callers_recursive(
 }
 
 fn query_callers(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<CallInfo>> {
-    let conn = db.conn();
     if let Some(target_file) = file {
-        let mut id_stmt = conn.prepare(
-            "SELECT s.id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.name = ?1
-             AND f.path LIKE '%' || ?2 || '%'",
-        )?;
-        let target_ids = id_stmt
-            .query_map(params![name, target_file], |row| row.get::<_, i64>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if target_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let placeholders = std::iter::repeat("?")
-            .take(target_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT DISTINCT s.name, f.path, r.line, r.kind
-             FROM refs r
-             JOIN files f ON r.source_file_id = f.id
-             LEFT JOIN symbols s ON r.source_symbol_id = s.id
-             WHERE r.kind = 'call'
-             AND (
-                r.target_symbol_id IN ({})
-                OR (r.target_symbol_id IS NULL AND r.target_name = ?)
-             )",
-            placeholders
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let mut dyn_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for id in target_ids {
-            dyn_params.push(Box::new(id));
-        }
-        dyn_params.push(Box::new(name.to_string()));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            dyn_params.iter().map(|p| p.as_ref()).collect();
-
-        let rows = stmt.query_map(param_refs.as_slice(), map_call_info)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .context("Failed to query callers")
+        query_callers_by_file(db, name, target_file)
     } else {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT s.name, f.path, r.line, r.kind
-             FROM refs r
-             JOIN files f ON r.source_file_id = f.id
-             LEFT JOIN symbols s ON r.source_symbol_id = s.id
-             WHERE r.target_name = ?1 AND r.kind = 'call'",
-        )?;
-        let rows = stmt.query_map(params![name], map_call_info)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .context("Failed to query callers")
+        query_callers_by_name(db, name)
     }
+}
+
+fn query_callers_by_name(db: &Database, name: &str) -> Result<Vec<CallInfo>> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.name, f.path, r.line, r.kind
+         FROM refs r
+         JOIN files f ON r.source_file_id = f.id
+         LEFT JOIN symbols s ON r.source_symbol_id = s.id
+         WHERE r.target_name = ?1 AND r.kind = 'call'",
+    )?;
+    let rows = stmt.query_map(params![name], map_call_info)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query callers")
+}
+
+fn resolve_symbol_ids_in_file(
+    conn: &rusqlite::Connection,
+    name: &str,
+    target_file: &str,
+) -> Result<Vec<i64>> {
+    let mut id_stmt = conn.prepare(
+        "SELECT s.id
+         FROM symbols s
+         JOIN files f ON s.file_id = f.id
+         WHERE s.name = ?1
+         AND f.path LIKE '%' || ?2 || '%'",
+    )?;
+    id_stmt
+        .query_map(params![name, target_file], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .context("Failed to resolve symbol ids")
+}
+
+fn query_callers_by_file(db: &Database, name: &str, target_file: &str) -> Result<Vec<CallInfo>> {
+    let conn = db.conn();
+    let target_ids = resolve_symbol_ids_in_file(conn, name, target_file)?;
+
+    if target_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(target_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT DISTINCT s.name, f.path, r.line, r.kind
+         FROM refs r
+         JOIN files f ON r.source_file_id = f.id
+         LEFT JOIN symbols s ON r.source_symbol_id = s.id
+         WHERE r.kind = 'call'
+         AND (
+            r.target_symbol_id IN ({})
+            OR (r.target_symbol_id IS NULL AND r.target_name = ?)
+         )",
+        placeholders
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut dyn_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    for id in target_ids {
+        dyn_params.push(Box::new(id));
+    }
+    dyn_params.push(Box::new(name.to_string()));
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        dyn_params.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt.query_map(param_refs.as_slice(), map_call_info)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query callers")
 }
 
 fn map_call_info(row: &rusqlite::Row) -> rusqlite::Result<CallInfo> {
@@ -467,20 +485,12 @@ fn query_imports(
         .context("Failed to query imports")
 }
 
-fn resolve_import_target(
-    db: &Database,
-    local_name: &str,
-    full_path: &str,
-) -> Result<Option<(String, String, String, i64)>> {
-    let conn = db.conn();
+type SymbolTarget = (String, String, String, i64);
 
-    // Extract the actual symbol name from the full path
-    let actual_name = full_path
-        .rsplit(&['\\', '.', ':', '/'][..])
-        .next()
-        .unwrap_or(full_path);
-
-    // Try to find the symbol by name, preferring files that match the import path
+fn query_symbol_candidates(
+    conn: &rusqlite::Connection,
+    name: &str,
+) -> Result<Vec<SymbolTarget>> {
     let mut stmt = conn.prepare(
         "SELECT f.path, s.name, s.kind, s.line_start
          FROM symbols s
@@ -488,38 +498,20 @@ fn resolve_import_target(
          WHERE s.name = ?1
          ORDER BY f.path",
     )?;
+    stmt.query_map(params![name], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?
+    .collect::<Result<Vec<_>, _>>()
+    .context("Failed to query symbol candidates")
+}
 
-    let candidates: Vec<(String, String, String, i64)> = stmt
-        .query_map(params![actual_name], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if candidates.is_empty() {
-        // Try with local_name if different from actual_name
-        if local_name != actual_name {
-            let mut stmt2 = conn.prepare(
-                "SELECT f.path, s.name, s.kind, s.line_start
-                 FROM symbols s
-                 JOIN files f ON s.file_id = f.id
-                 WHERE s.name = ?1
-                 ORDER BY f.path",
-            )?;
-            let c2: Vec<(String, String, String, i64)> = stmt2
-                .query_map(params![local_name], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(c2.into_iter().next());
-        }
-        return Ok(None);
-    }
-
+fn pick_best_candidate(
+    candidates: Vec<SymbolTarget>,
+    full_path: &str,
+) -> Option<SymbolTarget> {
     if candidates.len() == 1 {
-        return Ok(Some(candidates.into_iter().next().unwrap()));
+        return candidates.into_iter().next();
     }
-
-    // Multiple candidates — prefer one whose file path matches the import path
     let path_parts: Vec<&str> = full_path.split(&['\\', '.', ':', '/'][..]).collect();
     for candidate in &candidates {
         let file_lower = candidate.0.to_lowercase();
@@ -527,12 +519,35 @@ fn resolve_import_target(
             .iter()
             .all(|p| file_lower.contains(&p.to_lowercase()))
         {
-            return Ok(Some(candidate.clone()));
+            return Some(candidate.clone());
         }
     }
+    candidates.into_iter().next()
+}
 
-    // Return the first candidate as fallback
-    Ok(candidates.into_iter().next())
+fn resolve_import_target(
+    db: &Database,
+    local_name: &str,
+    full_path: &str,
+) -> Result<Option<SymbolTarget>> {
+    let conn = db.conn();
+
+    let actual_name = full_path
+        .rsplit(&['\\', '.', ':', '/'][..])
+        .next()
+        .unwrap_or(full_path);
+
+    let candidates = query_symbol_candidates(conn, actual_name)?;
+
+    if candidates.is_empty() {
+        if local_name != actual_name {
+            let fallback = query_symbol_candidates(conn, local_name)?;
+            return Ok(fallback.into_iter().next());
+        }
+        return Ok(None);
+    }
+
+    Ok(pick_best_candidate(candidates, full_path))
 }
 
 /// Find test functions that transitively call a given symbol.
