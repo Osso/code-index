@@ -6,6 +6,24 @@ use crate::model::{
     CallInfo, HierarchyEntry, ImportedByEntry, ResolvedImport, StoredReference, StoredSymbol,
 };
 
+/// Split a qualified name like "Class::method" or "Namespace\Class" into (name, qualifier).
+/// Returns (original, None) if no separator is found.
+fn parse_qualified_name(input: &str) -> (&str, Option<&str>) {
+    // Try :: first (PHP static methods, Rust paths)
+    if let Some(pos) = input.rfind("::") {
+        return (&input[pos + 2..], Some(&input[..pos]));
+    }
+    // Try backslash (PHP namespaces)
+    if let Some(pos) = input.rfind('\\') {
+        return (&input[pos + 1..], Some(&input[..pos]));
+    }
+    // Try dot (Python, TypeScript)
+    if let Some(pos) = input.rfind('.') {
+        return (&input[pos + 1..], Some(&input[..pos]));
+    }
+    (input, None)
+}
+
 /// Find symbol definitions by name, optionally filtered by kind and file.
 pub fn find_symbols(
     db: &Database,
@@ -13,30 +31,45 @@ pub fn find_symbols(
     kind: Option<&str>,
     file: Option<&str>,
 ) -> Result<Vec<StoredSymbol>> {
+    let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
-    let mut sql = String::from(
-        "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
-         FROM symbols s JOIN files f ON s.file_id = f.id
-         WHERE s.name = ?1",
-    );
-    if kind.is_some() {
-        sql.push_str(" AND s.kind = ?2");
+
+    let mut sql = if qualifier.is_some() {
+        String::from(
+            "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             JOIN symbols p ON s.parent_id = p.id
+             WHERE s.name = ?1 AND p.name = ?2",
+        )
+    } else {
+        String::from(
+            "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1",
+        )
+    };
+
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(bare_name.to_string()));
+    if let Some(q) = qualifier {
+        param_values.push(Box::new(q.to_string()));
     }
-    if file.is_some() {
-        sql.push_str(if kind.is_some() {
-            " AND f.path LIKE '%' || ?3 || '%'"
-        } else {
-            " AND f.path LIKE '%' || ?2 || '%'"
-        });
+    let next_idx = param_values.len() + 1;
+
+    if let Some(k) = kind {
+        sql.push_str(&format!(" AND s.kind = ?{next_idx}"));
+        param_values.push(Box::new(k.to_string()));
+    }
+    let next_idx = param_values.len() + 1;
+    if let Some(f) = file {
+        sql.push_str(&format!(" AND f.path LIKE '%' || ?{next_idx} || '%'"));
+        param_values.push(Box::new(f.to_string()));
     }
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = match (kind, file) {
-        (Some(k), Some(f)) => stmt.query_map(params![name, k, f], map_stored_symbol)?,
-        (Some(k), None) => stmt.query_map(params![name, k], map_stored_symbol)?,
-        (None, Some(f)) => stmt.query_map(params![name, f], map_stored_symbol)?,
-        (None, None) => stmt.query_map(params![name], map_stored_symbol)?,
-    };
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), map_stored_symbol)?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query symbols")
 }
@@ -149,15 +182,29 @@ fn query_callers(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<Ca
 }
 
 fn query_callers_by_name(db: &Database, name: &str) -> Result<Vec<CallInfo>> {
+    let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
-    let mut stmt = conn.prepare(
+
+    let sql = if qualifier.is_some() {
         "SELECT DISTINCT s.name, f.path, r.line, r.kind
          FROM refs r
          JOIN files f ON r.source_file_id = f.id
          LEFT JOIN symbols s ON r.source_symbol_id = s.id
-         WHERE r.target_name = ?1 AND r.kind = 'call'",
-    )?;
-    let rows = stmt.query_map(params![name], map_call_info)?;
+         WHERE r.target_name = ?1 AND r.kind = 'call' AND r.target_qualifier = ?2"
+    } else {
+        "SELECT DISTINCT s.name, f.path, r.line, r.kind
+         FROM refs r
+         JOIN files f ON r.source_file_id = f.id
+         LEFT JOIN symbols s ON r.source_symbol_id = s.id
+         WHERE r.target_name = ?1 AND r.kind = 'call'"
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let rows = if let Some(q) = qualifier {
+        stmt.query_map(params![bare_name, q], map_call_info)?
+    } else {
+        stmt.query_map(params![bare_name], map_call_info)?
+    };
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query callers")
 }
@@ -167,20 +214,48 @@ fn resolve_symbol_ids_in_file(
     name: &str,
     target_file: &str,
 ) -> Result<Vec<i64>> {
-    let mut id_stmt = conn.prepare(
-        "SELECT s.id
-         FROM symbols s
-         JOIN files f ON s.file_id = f.id
-         WHERE s.name = ?1
-         AND f.path LIKE '%' || ?2 || '%'",
-    )?;
+    let (bare_name, qualifier) = parse_qualified_name(name);
+
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(q) = qualifier {
+        (
+            "SELECT s.id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             JOIN symbols p ON s.parent_id = p.id
+             WHERE s.name = ?1
+             AND f.path LIKE '%' || ?2 || '%'
+             AND p.name = ?3",
+            vec![
+                Box::new(bare_name.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(target_file.to_string()),
+                Box::new(q.to_string()),
+            ],
+        )
+    } else {
+        (
+            "SELECT s.id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1
+             AND f.path LIKE '%' || ?2 || '%'",
+            vec![
+                Box::new(bare_name.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(target_file.to_string()),
+            ],
+        )
+    };
+
+    let mut id_stmt = conn.prepare(sql)?;
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
     id_stmt
-        .query_map(params![name, target_file], |row| row.get::<_, i64>(0))?
+        .query_map(param_refs.as_slice(), |row| row.get::<_, i64>(0))?
         .collect::<Result<Vec<_>, _>>()
         .context("Failed to resolve symbol ids")
 }
 
 fn query_callers_by_file(db: &Database, name: &str, target_file: &str) -> Result<Vec<CallInfo>> {
+    let (bare_name, _qualifier) = parse_qualified_name(name);
     let conn = db.conn();
     let target_ids = resolve_symbol_ids_in_file(conn, name, target_file)?;
 
@@ -210,7 +285,7 @@ fn query_callers_by_file(db: &Database, name: &str, target_file: &str) -> Result
     for id in target_ids {
         dyn_params.push(Box::new(id));
     }
-    dyn_params.push(Box::new(name.to_string()));
+    dyn_params.push(Box::new(bare_name.to_string()));
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         dyn_params.iter().map(|p| p.as_ref()).collect();
 
@@ -279,29 +354,56 @@ fn find_callees_recursive(
 }
 
 fn query_callees(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<CallInfo>> {
+    let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
 
-    let sql = if file.is_some() {
-        "SELECT r.target_name, f.path, r.line, r.kind
-         FROM refs r
-         JOIN symbols s ON r.source_symbol_id = s.id
-         JOIN files f ON r.source_file_id = f.id
-         WHERE s.name = ?1 AND r.kind = 'call'
-         AND f.path LIKE '%' || ?2 || '%'"
-    } else {
-        "SELECT r.target_name, f.path, r.line, r.kind
-         FROM refs r
-         JOIN symbols s ON r.source_symbol_id = s.id
-         JOIN files f ON r.source_file_id = f.id
-         WHERE s.name = ?1 AND r.kind = 'call'"
+    let sql = match (qualifier, file) {
+        (Some(_), Some(_)) => {
+            "SELECT r.target_name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN symbols s ON r.source_symbol_id = s.id
+             JOIN symbols p ON s.parent_id = p.id
+             JOIN files f ON r.source_file_id = f.id
+             WHERE s.name = ?1 AND p.name = ?2 AND r.kind = 'call'
+             AND f.path LIKE '%' || ?3 || '%'"
+        }
+        (Some(_), None) => {
+            "SELECT r.target_name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN symbols s ON r.source_symbol_id = s.id
+             JOIN symbols p ON s.parent_id = p.id
+             JOIN files f ON r.source_file_id = f.id
+             WHERE s.name = ?1 AND p.name = ?2 AND r.kind = 'call'"
+        }
+        (None, Some(_)) => {
+            "SELECT r.target_name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN symbols s ON r.source_symbol_id = s.id
+             JOIN files f ON r.source_file_id = f.id
+             WHERE s.name = ?1 AND r.kind = 'call'
+             AND f.path LIKE '%' || ?2 || '%'"
+        }
+        (None, None) => {
+            "SELECT r.target_name, f.path, r.line, r.kind
+             FROM refs r
+             JOIN symbols s ON r.source_symbol_id = s.id
+             JOIN files f ON r.source_file_id = f.id
+             WHERE s.name = ?1 AND r.kind = 'call'"
+        }
     };
 
     let mut stmt = conn.prepare(sql)?;
-    let rows = if let Some(f) = file {
-        stmt.query_map(params![name, f], map_callee_info)?
-    } else {
-        stmt.query_map(params![name], map_callee_info)?
-    };
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(bare_name.to_string()));
+    if let Some(q) = qualifier {
+        param_values.push(Box::new(q.to_string()));
+    }
+    if let Some(f) = file {
+        param_values.push(Box::new(f.to_string()));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), map_callee_info)?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query callees")
 }
@@ -368,36 +470,68 @@ pub fn find_references(
     name: &str,
     kind: Option<&str>,
 ) -> Result<Vec<StoredReference>> {
+    let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
 
-    let sql = if kind.is_some() {
-        "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
-                tf.path, ts.name
-         FROM refs r
-         JOIN files f ON r.source_file_id = f.id
-         LEFT JOIN symbols s ON r.source_symbol_id = s.id
-         LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
-         LEFT JOIN files tf ON ts.file_id = tf.id
-         WHERE r.target_name = ?1 AND r.kind = ?2
-         ORDER BY f.path, r.line"
-    } else {
-        "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
-                tf.path, ts.name
-         FROM refs r
-         JOIN files f ON r.source_file_id = f.id
-         LEFT JOIN symbols s ON r.source_symbol_id = s.id
-         LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
-         LEFT JOIN files tf ON ts.file_id = tf.id
-         WHERE r.target_name = ?1
-         ORDER BY f.path, r.line"
+    let sql = match (qualifier, kind) {
+        (Some(_), Some(_)) => {
+            "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
+                    tf.path, ts.name
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
+             LEFT JOIN files tf ON ts.file_id = tf.id
+             WHERE r.target_name = ?1 AND r.target_qualifier = ?2 AND r.kind = ?3
+             ORDER BY f.path, r.line"
+        }
+        (Some(_), None) => {
+            "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
+                    tf.path, ts.name
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
+             LEFT JOIN files tf ON ts.file_id = tf.id
+             WHERE r.target_name = ?1 AND r.target_qualifier = ?2
+             ORDER BY f.path, r.line"
+        }
+        (None, Some(_)) => {
+            "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
+                    tf.path, ts.name
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
+             LEFT JOIN files tf ON ts.file_id = tf.id
+             WHERE r.target_name = ?1 AND r.kind = ?2
+             ORDER BY f.path, r.line"
+        }
+        (None, None) => {
+            "SELECT f.path, s.name, r.target_name, r.target_qualifier, r.kind, r.line, r.resolved,
+                    tf.path, ts.name
+             FROM refs r
+             JOIN files f ON r.source_file_id = f.id
+             LEFT JOIN symbols s ON r.source_symbol_id = s.id
+             LEFT JOIN symbols ts ON r.target_symbol_id = ts.id
+             LEFT JOIN files tf ON ts.file_id = tf.id
+             WHERE r.target_name = ?1
+             ORDER BY f.path, r.line"
+        }
     };
 
     let mut stmt = conn.prepare(sql)?;
-    let rows = if let Some(k) = kind {
-        stmt.query_map(params![name, k], map_stored_reference)?
-    } else {
-        stmt.query_map(params![name], map_stored_reference)?
-    };
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    param_values.push(Box::new(bare_name.to_string()));
+    if let Some(q) = qualifier {
+        param_values.push(Box::new(q.to_string()));
+    }
+    if let Some(k) = kind {
+        param_values.push(Box::new(k.to_string()));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), map_stored_reference)?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query references")
 }
@@ -577,13 +711,14 @@ pub fn find_tested_by(
     }
 
     // Also check if the symbol itself is a test
+    let (bare_name, _) = parse_qualified_name(name);
     let mut stmt = conn.prepare(
         "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.name = ?1 AND s.is_test = 1",
     )?;
     let self_tests = stmt
-        .query_map(params![name], map_stored_symbol)?
+        .query_map(params![bare_name], map_stored_symbol)?
         .collect::<Result<Vec<_>, _>>()?;
     tests.extend(self_tests);
 
