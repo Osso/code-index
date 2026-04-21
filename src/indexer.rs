@@ -28,36 +28,36 @@ pub fn index_directory(db: &Database, dir: &str, full: bool) -> Result<IndexStat
             Ok(e) => e,
             Err(_) => continue,
         };
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+        let Some((file_path, lang)) = supported_entry(&entry) else {
             continue;
-        }
-        let file_path = entry.path();
-        let ext = match file_path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e,
-            None => continue,
         };
-        let lang = match Language::from_extension(ext) {
-            Some(l) => l,
-            None => continue,
-        };
-
-        match index_single_file(db, file_path, lang, full) {
-            Ok(changed) => {
-                if changed {
-                    stats.indexed += 1;
-                } else {
-                    stats.skipped += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("Error indexing {}: {}", file_path.display(), e);
-                stats.errors += 1;
-            }
-        }
+        let result = index_single_file(db, file_path, lang, full);
+        record_index_result(result, file_path, &mut stats);
     }
 
     db.commit()?;
     Ok(stats)
+}
+
+fn supported_entry(entry: &ignore::DirEntry) -> Option<(&Path, Language)> {
+    if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+        return None;
+    }
+    let file_path = entry.path();
+    let ext = file_path.extension().and_then(|e| e.to_str())?;
+    let lang = Language::from_extension(ext)?;
+    Some((file_path, lang))
+}
+
+fn record_index_result(result: Result<bool>, file_path: &Path, stats: &mut IndexStats) {
+    match result {
+        Ok(true) => stats.indexed += 1,
+        Ok(false) => stats.skipped += 1,
+        Err(e) => {
+            eprintln!("Error indexing {}: {}", file_path.display(), e);
+            stats.errors += 1;
+        }
+    }
 }
 
 fn build_walker(path: &Path) -> Result<ignore::Walk> {
