@@ -129,31 +129,36 @@ fn extract_superclasses(
     references: &mut Vec<Reference>,
 ) {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "identifier" => {
-                    references.push(Reference {
-                        kind: RefKind::Inherit,
-                        target_name: node_text(child, src).to_string(),
-                        target_qualifier: None,
-                        line: child.start_position().row,
-                        source_symbol_name: Some(class_name.to_string()),
-                    });
-                }
-                "attribute" => {
-                    let full = node_text(child, src);
-                    let name = full.rsplit('.').next().unwrap_or(full);
-                    references.push(Reference {
-                        kind: RefKind::Inherit,
-                        target_name: name.to_string(),
-                        target_qualifier: Some(full.to_string()),
-                        line: child.start_position().row,
-                        source_symbol_name: Some(class_name.to_string()),
-                    });
-                }
-                _ => {}
-            }
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if let Some(reference) = superclass_reference(child, src, class_name) {
+            references.push(reference);
         }
+    }
+}
+
+fn superclass_reference(node: tree_sitter::Node, src: &[u8], class_name: &str) -> Option<Reference> {
+    match node.kind() {
+        "identifier" => Some(Reference {
+            kind: RefKind::Inherit,
+            target_name: node_text(node, src).to_string(),
+            target_qualifier: None,
+            line: node.start_position().row,
+            source_symbol_name: Some(class_name.to_string()),
+        }),
+        "attribute" => {
+            let full = node_text(node, src);
+            let name = full.rsplit('.').next().unwrap_or(full);
+            Some(Reference {
+                kind: RefKind::Inherit,
+                target_name: name.to_string(),
+                target_qualifier: Some(full.to_string()),
+                line: node.start_position().row,
+                source_symbol_name: Some(class_name.to_string()),
+            })
+        }
+        _ => None,
     }
 }
 
