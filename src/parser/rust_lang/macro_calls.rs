@@ -5,13 +5,6 @@ pub(super) struct MacroCall {
     pub(super) line_offset: usize,
 }
 
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "else", "enum", "extern", "false", "fn",
-    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "self", "static", "struct", "trait", "true", "type", "unsafe", "use", "where",
-    "while",
-];
-
 pub(super) fn scan_macro_calls(text: &str) -> Vec<MacroCall> {
     let bytes = text.as_bytes();
     let mut calls = Vec::new();
@@ -172,7 +165,62 @@ fn qualifier_for_call(bytes: &[u8], start: usize, segments: &[String]) -> Option
 }
 
 fn is_plain_keyword(segments: &[String]) -> bool {
-    segments.len() == 1 && RUST_KEYWORDS.contains(&segments[0].as_str())
+    segments.len() == 1 && is_rust_keyword(segments[0].as_str())
+}
+
+fn is_rust_keyword(keyword: &str) -> bool {
+    is_flow_keyword(keyword)
+        || is_declaration_keyword(keyword)
+        || is_modifier_keyword(keyword)
+        || is_literal_keyword(keyword)
+}
+
+fn is_flow_keyword(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "async"
+            | "await"
+            | "break"
+            | "continue"
+            | "else"
+            | "for"
+            | "if"
+            | "in"
+            | "loop"
+            | "match"
+            | "return"
+            | "where"
+            | "while"
+    )
+}
+
+fn is_declaration_keyword(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "const"
+            | "enum"
+            | "extern"
+            | "fn"
+            | "impl"
+            | "let"
+            | "mod"
+            | "static"
+            | "struct"
+            | "trait"
+            | "type"
+            | "use"
+    )
+}
+
+fn is_modifier_keyword(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "as" | "move" | "mut" | "pub" | "ref" | "self" | "unsafe"
+    )
+}
+
+fn is_literal_keyword(keyword: &str) -> bool {
+    matches!(keyword, "false" | "true")
 }
 
 fn looks_like_function_name(name: &str) -> bool {
@@ -382,6 +430,19 @@ mod tests {
                     line_offset: 0,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn scan_macro_calls_skips_rust_keywords() {
+        let calls = scan_macro_calls("(if(cond), process_login_requests())");
+        assert_eq!(
+            calls,
+            vec![MacroCall {
+                name: "process_login_requests".to_string(),
+                qualifier: None,
+                line_offset: 0,
+            }]
         );
     }
 }
