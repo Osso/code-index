@@ -116,6 +116,74 @@ fn make_call_ref(
     }
 }
 
+#[derive(Clone, Copy)]
+struct SymbolCaptureIndices {
+    fn_name: u32,
+    fn_params: u32,
+    fn_node: u32,
+    struct_name: u32,
+    struct_node: u32,
+    enum_name: u32,
+    enum_node: u32,
+    trait_name: u32,
+    trait_node: u32,
+}
+
+fn symbol_capture_indices(query: &Query) -> SymbolCaptureIndices {
+    SymbolCaptureIndices {
+        fn_name: query.capture_index_for_name("fn_name").unwrap(),
+        fn_params: query.capture_index_for_name("fn_params").unwrap(),
+        fn_node: query.capture_index_for_name("fn_node").unwrap(),
+        struct_name: query.capture_index_for_name("struct_name").unwrap(),
+        struct_node: query.capture_index_for_name("struct_node").unwrap(),
+        enum_name: query.capture_index_for_name("enum_name").unwrap(),
+        enum_node: query.capture_index_for_name("enum_node").unwrap(),
+        trait_name: query.capture_index_for_name("trait_name").unwrap(),
+        trait_node: query.capture_index_for_name("trait_node").unwrap(),
+    }
+}
+
+fn build_symbol_for_capture<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    capture_index: u32,
+    capture_node: tree_sitter::Node<'a>,
+    src: &[u8],
+    indices: SymbolCaptureIndices,
+) -> Option<Symbol> {
+    if capture_index == indices.fn_name {
+        return Some(build_fn_symbol(
+            query_match,
+            capture_node,
+            src,
+            indices.fn_node,
+            indices.fn_params,
+        ));
+    }
+    build_type_symbol_for_capture(query_match, capture_index, capture_node, src, indices)
+}
+
+fn build_type_symbol_for_capture<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    capture_index: u32,
+    capture_node: tree_sitter::Node<'a>,
+    src: &[u8],
+    indices: SymbolCaptureIndices,
+) -> Option<Symbol> {
+    let (node_idx, kind) = match capture_index {
+        i if i == indices.struct_name => (indices.struct_node, SymbolKind::Struct),
+        i if i == indices.enum_name => (indices.enum_node, SymbolKind::Enum),
+        i if i == indices.trait_name => (indices.trait_node, SymbolKind::Trait),
+        _ => return None,
+    };
+    Some(build_type_sym(
+        query_match,
+        capture_node,
+        src,
+        node_idx,
+        kind,
+    ))
+}
+
 fn parse_symbols(
     root: tree_sitter::Node,
     src: &[u8],
@@ -123,51 +191,12 @@ fn parse_symbols(
     symbols: &mut Vec<Symbol>,
 ) -> Result<()> {
     let query = Query::new(lang, SYMBOL_QUERY).context("Invalid symbol query")?;
+    let indices = symbol_capture_indices(&query);
 
-    for_each_match(&query, root, src, |m, q, _| {
-        let fn_name_idx = q.capture_index_for_name("fn_name").unwrap();
-        let fn_params_idx = q.capture_index_for_name("fn_params").unwrap();
-        let fn_node_idx = q.capture_index_for_name("fn_node").unwrap();
-        let struct_name_idx = q.capture_index_for_name("struct_name").unwrap();
-        let struct_node_idx = q.capture_index_for_name("struct_node").unwrap();
-        let enum_name_idx = q.capture_index_for_name("enum_name").unwrap();
-        let enum_node_idx = q.capture_index_for_name("enum_node").unwrap();
-        let trait_name_idx = q.capture_index_for_name("trait_name").unwrap();
-        let trait_node_idx = q.capture_index_for_name("trait_node").unwrap();
-
+    for_each_match(&query, root, src, |m, _, _| {
         for cap in m.captures {
-            if cap.index == fn_name_idx {
-                symbols.push(build_fn_symbol(
-                    m,
-                    cap.node,
-                    src,
-                    fn_node_idx,
-                    fn_params_idx,
-                ));
-            } else if cap.index == struct_name_idx {
-                symbols.push(build_type_sym(
-                    m,
-                    cap.node,
-                    src,
-                    struct_node_idx,
-                    SymbolKind::Struct,
-                ));
-            } else if cap.index == enum_name_idx {
-                symbols.push(build_type_sym(
-                    m,
-                    cap.node,
-                    src,
-                    enum_node_idx,
-                    SymbolKind::Enum,
-                ));
-            } else if cap.index == trait_name_idx {
-                symbols.push(build_type_sym(
-                    m,
-                    cap.node,
-                    src,
-                    trait_node_idx,
-                    SymbolKind::Trait,
-                ));
+            if let Some(symbol) = build_symbol_for_capture(m, cap.index, cap.node, src, indices) {
+                symbols.push(symbol);
             }
         }
     });
