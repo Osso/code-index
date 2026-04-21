@@ -323,17 +323,23 @@ fn parse_call_match(
 ) {
     for capture in query_match.captures {
         let call_capture = make_call_capture(capture, symbols);
-        if handle_direct_call_capture(&call_capture, src, references, indices) {
-            continue;
-        }
-        if handle_method_call_capture(query_match, &call_capture, src, references, indices) {
-            continue;
-        }
-        if handle_scoped_call_capture(&call_capture, src, references, indices) {
+        if handle_non_macro_call_capture(query_match, &call_capture, src, references, indices) {
             continue;
         }
         handle_macro_call_capture(query_match, &call_capture, src, references, indices);
     }
+}
+
+fn handle_non_macro_call_capture(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &CallCapture<'_>,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
+) -> bool {
+    handle_direct_call_capture(capture, src, references, indices)
+        || handle_method_call_capture(query_match, capture, src, references, indices)
+        || handle_scoped_call_capture(capture, src, references, indices)
 }
 
 #[derive(Clone)]
