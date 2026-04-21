@@ -670,16 +670,25 @@ fn is_inside_impl(node: tree_sitter::Node) -> bool {
 fn find_parent_impl_type<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        if parent.kind() == "impl_item" {
-            for i in 0..parent.child_count() {
-                if let Some(child) = parent.child(i) {
-                    if child.kind() == "type_identifier" {
-                        return Some(node_text(child, src).to_string());
-                    }
-                }
-            }
+        if let Some(type_name) = parent_impl_type_name(parent, src) {
+            return Some(type_name);
         }
         current = parent.parent();
+    }
+    None
+}
+
+fn parent_impl_type_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if node.kind() != "impl_item" {
+        return None;
+    }
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() == "type_identifier" {
+            return Some(node_text(child, src).to_string());
+        }
     }
     None
 }
