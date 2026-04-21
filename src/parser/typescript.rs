@@ -506,40 +506,82 @@ fn parse_calls(
     references: &mut Vec<Reference>,
 ) -> Result<()> {
     let query = Query::new(lang, CALL_QUERY).context("Invalid TS call query")?;
+    let indices = ts_call_capture_indices(&query);
 
-    for_each_match(&query, root, src, |m, q, _| {
-        let ci = q.capture_index_for_name("call_name").unwrap();
-        let mi = q.capture_index_for_name("method_call_name").unwrap();
-        let ni = q.capture_index_for_name("new_name").unwrap();
-        let nmi = q.capture_index_for_name("new_member_name").unwrap();
-        let ji = q.capture_index_for_name("jsx_component_name").unwrap();
-
+    for_each_match(&query, root, src, |m, _, _| {
         for cap in m.captures {
-            if cap.index == ci || cap.index == mi || cap.index == ni || cap.index == nmi {
-                let line = cap.node.start_position().row;
-                references.push(Reference {
-                    kind: RefKind::Call,
-                    target_name: node_text(cap.node, src).to_string(),
-                    target_qualifier: None,
-                    line,
-                    source_symbol_name: find_enclosing_symbol(symbols, line),
-                });
-            } else if cap.index == ji {
-                let name = node_text(cap.node, src);
-                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    let line = cap.node.start_position().row;
-                    references.push(Reference {
-                        kind: RefKind::Call,
-                        target_name: name.to_string(),
-                        target_qualifier: None,
-                        line,
-                        source_symbol_name: find_enclosing_symbol(symbols, line),
-                    });
-                }
+            if let Some(reference) = ts_call_reference_for_capture(cap, src, symbols, indices) {
+                references.push(reference);
             }
         }
     });
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct TsCallCaptureIndices {
+    call_name: u32,
+    method_call_name: u32,
+    new_name: u32,
+    new_member_name: u32,
+    jsx_component_name: u32,
+}
+
+fn ts_call_capture_indices(query: &Query) -> TsCallCaptureIndices {
+    TsCallCaptureIndices {
+        call_name: query.capture_index_for_name("call_name").unwrap(),
+        method_call_name: query.capture_index_for_name("method_call_name").unwrap(),
+        new_name: query.capture_index_for_name("new_name").unwrap(),
+        new_member_name: query.capture_index_for_name("new_member_name").unwrap(),
+        jsx_component_name: query.capture_index_for_name("jsx_component_name").unwrap(),
+    }
+}
+
+fn ts_call_reference_for_capture(
+    capture: &tree_sitter::QueryCapture<'_>,
+    src: &[u8],
+    symbols: &[Symbol],
+    indices: TsCallCaptureIndices,
+) -> Option<Reference> {
+    if is_direct_ts_call_capture(capture.index, indices) {
+        return Some(build_ts_call_reference(
+            node_text(capture.node, src),
+            capture.node,
+            symbols,
+        ));
+    }
+    if capture.index == indices.jsx_component_name
+        && is_jsx_component_name(node_text(capture.node, src))
+    {
+        return Some(build_ts_call_reference(
+            node_text(capture.node, src),
+            capture.node,
+            symbols,
+        ));
+    }
+    None
+}
+
+fn is_direct_ts_call_capture(capture_index: u32, indices: TsCallCaptureIndices) -> bool {
+    capture_index == indices.call_name
+        || capture_index == indices.method_call_name
+        || capture_index == indices.new_name
+        || capture_index == indices.new_member_name
+}
+
+fn is_jsx_component_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn build_ts_call_reference(name: &str, node: tree_sitter::Node, symbols: &[Symbol]) -> Reference {
+    let line = node.start_position().row;
+    Reference {
+        kind: RefKind::Call,
+        target_name: name.to_string(),
+        target_qualifier: None,
+        line,
+        source_symbol_name: find_enclosing_symbol(symbols, line),
+    }
 }
 
 fn collect_named_imports(
