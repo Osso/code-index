@@ -664,29 +664,39 @@ fn pick_best_candidate(candidates: Vec<SymbolTarget>, full_path: &str) -> Option
     candidates.into_iter().next()
 }
 
+fn extract_import_symbol_name(full_path: &str) -> &str {
+    full_path
+        .rsplit(&['\\', '.', ':', '/'][..])
+        .next()
+        .unwrap_or(full_path)
+}
+
+fn resolve_import_target_from_candidates(
+    conn: &rusqlite::Connection,
+    local_name: &str,
+    actual_name: &str,
+    full_path: &str,
+    candidates: Vec<SymbolTarget>,
+) -> Result<Option<SymbolTarget>> {
+    if !candidates.is_empty() {
+        return Ok(pick_best_candidate(candidates, full_path));
+    }
+    if local_name == actual_name {
+        return Ok(None);
+    }
+    let fallback = query_symbol_candidates(conn, local_name)?;
+    Ok(fallback.into_iter().next())
+}
+
 fn resolve_import_target(
     db: &Database,
     local_name: &str,
     full_path: &str,
 ) -> Result<Option<SymbolTarget>> {
     let conn = db.conn();
-
-    let actual_name = full_path
-        .rsplit(&['\\', '.', ':', '/'][..])
-        .next()
-        .unwrap_or(full_path);
-
+    let actual_name = extract_import_symbol_name(full_path);
     let candidates = query_symbol_candidates(conn, actual_name)?;
-
-    if candidates.is_empty() {
-        if local_name != actual_name {
-            let fallback = query_symbol_candidates(conn, local_name)?;
-            return Ok(fallback.into_iter().next());
-        }
-        return Ok(None);
-    }
-
-    Ok(pick_best_candidate(candidates, full_path))
+    resolve_import_target_from_candidates(conn, local_name, actual_name, full_path, candidates)
 }
 
 /// Find test functions that transitively call a given symbol.
