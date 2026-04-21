@@ -275,8 +275,13 @@ fn find_callees_recursive(
 fn query_callees(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<CallInfo>> {
     let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
+    let sql = callees_sql(qualifier, file);
+    let params = callees_params(bare_name, qualifier, file);
+    execute_callees_query(conn, sql, params)
+}
 
-    let sql = match (qualifier, file) {
+fn callees_sql(qualifier: Option<&str>, file: Option<&str>) -> &'static str {
+    match (qualifier, file) {
         (Some(_), Some(_)) => {
             "SELECT r.target_name, f.path, r.line, r.kind
              FROM refs r
@@ -309,19 +314,27 @@ fn query_callees(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<Ca
              JOIN files f ON r.source_file_id = f.id
              WHERE s.name = ?1 AND r.kind = 'call'"
         }
-    };
+    }
+}
 
-    let mut stmt = conn.prepare(sql)?;
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(bare_name.to_string()));
+fn callees_params(bare_name: &str, qualifier: Option<&str>, file: Option<&str>) -> Vec<SqlParam> {
+    let mut param_values: Vec<SqlParam> = vec![Box::new(bare_name.to_string())];
     if let Some(q) = qualifier {
         param_values.push(Box::new(q.to_string()));
     }
     if let Some(f) = file {
         param_values.push(Box::new(f.to_string()));
     }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|p| p.as_ref()).collect();
+    param_values
+}
+
+fn execute_callees_query(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    param_values: Vec<SqlParam>,
+) -> Result<Vec<CallInfo>> {
+    let mut stmt = conn.prepare(sql)?;
+    let param_refs: Vec<&dyn ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), map_callee_info)?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query callees")
