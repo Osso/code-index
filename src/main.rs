@@ -180,64 +180,112 @@ fn main() -> Result<()> {
 
 fn dispatch(command: Command) -> Result<()> {
     match command {
+        command @ Command::Serve
+        | command @ Command::Index { .. }
+        | command @ Command::Project { .. } => dispatch_core_command(command)?,
+        command @ Command::Symbol { .. }
+        | command @ Command::Callers { .. }
+        | command @ Command::Callees { .. }
+        | command @ Command::References { .. }
+        | command @ Command::DeadCode { .. }
+        | command @ Command::Hierarchy { .. }
+        | command @ Command::TestedBy { .. }
+        | command @ Command::Untested { .. } => dispatch_analysis_command(command)?,
+        command @ Command::ImportedBy { .. }
+        | command @ Command::ResolveImport { .. }
+        | command @ Command::List { .. }
+        | command @ Command::Watch { .. }
+        | command @ Command::Status { .. } => dispatch_utility_command(command)?,
+    }
+    Ok(())
+}
+
+fn dispatch_core_command(command: Command) -> Result<()> {
+    match command {
         Command::Serve => run_mcp_server()?,
         Command::Index { path, full } => cmd_index(path.as_deref(), full)?,
+        Command::Project { action } => cmd_project(action)?,
+        _ => unreachable!("non-core command routed to dispatch_core_command"),
+    }
+    Ok(())
+}
+
+fn dispatch_analysis_command(command: Command) -> Result<()> {
+    match command {
+        command @ Command::Symbol { .. }
+        | command @ Command::Callers { .. }
+        | command @ Command::Callees { .. }
+        | command @ Command::References { .. } => dispatch_symbol_call_command(command),
+        command @ Command::DeadCode { .. }
+        | command @ Command::Hierarchy { .. }
+        | command @ Command::TestedBy { .. }
+        | command @ Command::Untested { .. } => dispatch_quality_command(command),
+        _ => unreachable!("non-analysis command routed to dispatch_analysis_command"),
+    }
+}
+
+fn dispatch_symbol_call_command(command: Command) -> Result<()> {
+    match command {
         Command::Symbol {
             name,
             kind,
             file,
             path,
-        } => {
-            cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?;
-        }
+        } => cmd_symbol(path.as_deref(), &name, kind.as_deref(), file.as_deref())?,
         Command::Callers {
             name,
             file,
             depth,
             path,
-        } => {
-            cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?;
-        }
+        } => cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?,
         Command::Callees {
             name,
             file,
             depth,
             path,
-        } => {
-            cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?;
+        } => cmd_callees(path.as_deref(), &name, file.as_deref(), depth)?,
+        Command::References { name, kind, path } => {
+            cmd_references(path.as_deref(), &name, kind.as_deref())?
         }
+        _ => unreachable!("non-symbol/call command routed to dispatch_symbol_call_command"),
+    }
+    Ok(())
+}
+
+fn dispatch_quality_command(command: Command) -> Result<()> {
+    match command {
         Command::DeadCode { exclude, path } => cmd_dead_code(path.as_deref(), &exclude)?,
         Command::Hierarchy {
             name,
             direction,
             path,
-        } => {
-            cmd_hierarchy(path.as_deref(), &name, &direction)?;
-        }
-        Command::References { name, kind, path } => {
-            cmd_references(path.as_deref(), &name, kind.as_deref())?;
-        }
+        } => cmd_hierarchy(path.as_deref(), &name, &direction)?,
         Command::TestedBy {
             name,
             file,
             depth,
             path,
-        } => {
-            cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?;
-        }
+        } => cmd_tested_by(path.as_deref(), &name, file.as_deref(), depth)?,
         Command::Untested { exclude, path } => cmd_untested(path.as_deref(), &exclude)?,
+        _ => unreachable!("non-quality command routed to dispatch_quality_command"),
+    }
+    Ok(())
+}
+
+fn dispatch_utility_command(command: Command) -> Result<()> {
+    match command {
         Command::ImportedBy { name, file, path } => {
-            cmd_imported_by(path.as_deref(), &name, file.as_deref())?;
+            cmd_imported_by(path.as_deref(), &name, file.as_deref())?
         }
         Command::ResolveImport { name, file, path } => {
-            cmd_resolve_import(path.as_deref(), &name, file.as_deref())?;
+            cmd_resolve_import(path.as_deref(), &name, file.as_deref())?
         }
         Command::List { kind, file, path } => {
-            cmd_list(path.as_deref(), kind.as_deref(), file.as_deref())?;
+            cmd_list(path.as_deref(), kind.as_deref(), file.as_deref())?
         }
         Command::Watch { path } => cmd_watch(path.as_deref())?,
         Command::Status { path } => cmd_status(path.as_deref())?,
-        Command::Project { action } => cmd_project(action)?,
+        _ => unreachable!("non-utility command routed to dispatch_utility_command"),
     }
     Ok(())
 }
