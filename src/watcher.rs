@@ -87,33 +87,10 @@ fn handle_changes(db_path: &str, files: &[PathBuf]) {
 
     let mut indexed = 0usize;
     for path in files {
-        let ext = match path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e,
-            None => continue,
-        };
-        let lang = match Language::from_extension(ext) {
-            Some(l) => l,
-            None => continue,
-        };
-        let path_str = match path.to_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Check if file still exists (might have been deleted)
-        if !path.exists() {
-            log::info!("Removed: {path_str}");
-            continue;
-        }
-
-        match reindex_file(&db, path, lang) {
-            Ok(changed) => {
-                if changed {
-                    indexed += 1;
-                    log::info!("Re-indexed: {path_str}");
-                }
-            }
-            Err(e) => log::error!("Error indexing {path_str}: {e}"),
+        match handle_changed_file(&db, path) {
+            Ok(true) => indexed += 1,
+            Ok(false) => {}
+            Err(e) => log::error!("Error indexing {}: {e}", path.display()),
         }
     }
 
@@ -123,6 +100,29 @@ fn handle_changes(db_path: &str, files: &[PathBuf]) {
             Err(e) => log::error!("Resolution error: {e}"),
         }
     }
+}
+
+fn handle_changed_file(db: &Database, path: &Path) -> Result<bool> {
+    let Some(path_str) = path.to_str() else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        log::info!("Removed: {path_str}");
+        return Ok(false);
+    }
+    let Some(lang) = changed_file_language(path) else {
+        return Ok(false);
+    };
+    let changed = reindex_file(db, path, lang)?;
+    if changed {
+        log::info!("Re-indexed: {path_str}");
+    }
+    Ok(changed)
+}
+
+fn changed_file_language(path: &Path) -> Option<Language> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    Language::from_extension(ext)
 }
 
 fn reindex_file(db: &Database, path: &Path, lang: Language) -> Result<bool> {
