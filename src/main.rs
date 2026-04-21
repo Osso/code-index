@@ -438,13 +438,25 @@ fn cmd_project_list() -> Result<()> {
 }
 
 fn print_project_entries(projects: &std::collections::BTreeMap<String, config::ProjectEntry>) {
-    if projects.is_empty() {
+    let rows = project_rows(projects);
+    if rows.is_empty() {
         println!("No projects registered.");
         return;
     }
+    print_project_rows(&rows);
+}
 
-    for (name, entry) in projects {
-        let row = format_project_list_row(name, entry);
+fn project_rows(
+    projects: &std::collections::BTreeMap<String, config::ProjectEntry>,
+) -> Vec<String> {
+    projects
+        .iter()
+        .map(|(name, entry)| format_project_list_row(name, entry))
+        .collect()
+}
+
+fn print_project_rows(rows: &[String]) {
+    for row in rows {
         println!("{row}");
     }
 }
