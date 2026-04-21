@@ -414,12 +414,21 @@ fn resolve_project_registration_dir(path: Option<String>) -> Result<std::path::P
 }
 
 fn cmd_project_remove(name: &str) -> Result<()> {
-    if config::remove_project(name)? {
-        println!("Removed project '{name}'");
-    } else {
-        println!("Project '{name}' not found");
-    }
+    let removed = config::remove_project(name)?;
+    print_project_remove_result(name, removed);
     Ok(())
+}
+
+fn print_project_remove_result(name: &str, removed: bool) {
+    let message = project_remove_result_message(name, removed);
+    println!("{message}");
+}
+
+fn project_remove_result_message(name: &str, removed: bool) -> String {
+    match removed {
+        true => format!("Removed project '{name}'"),
+        false => format!("Project '{name}' not found"),
+    }
 }
 
 fn cmd_project_list() -> Result<()> {
@@ -435,8 +444,8 @@ fn print_project_entries(projects: &std::collections::BTreeMap<String, config::P
     }
 
     for (name, entry) in projects {
-        let status = project_index_status(&entry.path);
-        println!("{name}: {} ({status})", entry.path);
+        let row = format_project_list_row(name, entry);
+        println!("{row}");
     }
 }
 
@@ -447,4 +456,9 @@ fn project_index_status(project_path: &str) -> &'static str {
     } else {
         "not indexed"
     }
+}
+
+fn format_project_list_row(name: &str, entry: &config::ProjectEntry) -> String {
+    let status = project_index_status(&entry.path);
+    format!("{name}: {} ({status})", entry.path)
 }
