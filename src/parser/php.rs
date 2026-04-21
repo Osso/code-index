@@ -391,20 +391,32 @@ fn parse_inheritance(
 fn find_parent_class<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        let kind = parent.kind();
-        if kind == "class_declaration"
-            || kind == "trait_declaration"
-            || kind == "interface_declaration"
-        {
-            for i in 0..parent.child_count() {
-                if let Some(child) = parent.child(i) {
-                    if child.kind() == "name" {
-                        return Some(node_text(child, src).to_string());
-                    }
-                }
-            }
+        if let Some(name) = parent_container_name(parent, src) {
+            return Some(name);
         }
         current = parent.parent();
+    }
+    None
+}
+
+fn parent_container_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if !matches!(
+        node.kind(),
+        "class_declaration" | "trait_declaration" | "interface_declaration"
+    ) {
+        return None;
+    }
+    find_named_child(node, src)
+}
+
+fn find_named_child(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() == "name" {
+            return Some(node_text(child, src).to_string());
+        }
     }
     None
 }
