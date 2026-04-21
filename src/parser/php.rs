@@ -213,6 +213,106 @@ fn is_php_test(method_name: &str, parent_class: Option<&str>) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PhpSymbolCaptureIndices {
+    fn_name: u32,
+    fn_params: u32,
+    fn_node: u32,
+    method_name: u32,
+    method_params: u32,
+    method_node: u32,
+    class_name: u32,
+    class_node: u32,
+    iface_name: u32,
+    iface_node: u32,
+    trait_name: u32,
+    trait_node: u32,
+}
+
+fn php_symbol_capture_indices(query: &Query) -> PhpSymbolCaptureIndices {
+    PhpSymbolCaptureIndices {
+        fn_name: query.capture_index_for_name("fn_name").unwrap(),
+        fn_params: query.capture_index_for_name("fn_params").unwrap(),
+        fn_node: query.capture_index_for_name("fn_node").unwrap(),
+        method_name: query.capture_index_for_name("method_name").unwrap(),
+        method_params: query.capture_index_for_name("method_params").unwrap(),
+        method_node: query.capture_index_for_name("method_node").unwrap(),
+        class_name: query.capture_index_for_name("class_name").unwrap(),
+        class_node: query.capture_index_for_name("class_node").unwrap(),
+        iface_name: query.capture_index_for_name("iface_name").unwrap(),
+        iface_node: query.capture_index_for_name("iface_node").unwrap(),
+        trait_name: query.capture_index_for_name("trait_name").unwrap(),
+        trait_node: query.capture_index_for_name("trait_node").unwrap(),
+    }
+}
+
+fn build_php_symbol_for_capture(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &tree_sitter::QueryCapture<'_>,
+    src: &[u8],
+    indices: PhpSymbolCaptureIndices,
+) -> Option<Symbol> {
+    build_php_callable_symbol(query_match, capture, src, indices)
+        .or_else(|| build_php_type_symbol(query_match, capture, src, indices))
+}
+
+fn build_php_callable_symbol(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &tree_sitter::QueryCapture<'_>,
+    src: &[u8],
+    indices: PhpSymbolCaptureIndices,
+) -> Option<Symbol> {
+    match capture.index {
+        i if i == indices.fn_name => Some(build_fn_sym(
+            query_match,
+            capture.node,
+            src,
+            indices.fn_node,
+            indices.fn_params,
+        )),
+        i if i == indices.method_name => Some(build_method_sym(
+            query_match,
+            capture.node,
+            src,
+            indices.method_node,
+            indices.method_params,
+        )),
+        _ => None,
+    }
+}
+
+fn build_php_type_symbol(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &tree_sitter::QueryCapture<'_>,
+    src: &[u8],
+    indices: PhpSymbolCaptureIndices,
+) -> Option<Symbol> {
+    match capture.index {
+        i if i == indices.class_name => Some(build_type_sym(
+            query_match,
+            capture.node,
+            src,
+            indices.class_node,
+            SymbolKind::Class,
+        )),
+        i if i == indices.iface_name => Some(build_type_sym(
+            query_match,
+            capture.node,
+            src,
+            indices.iface_node,
+            SymbolKind::Interface,
+        )),
+        i if i == indices.trait_name => Some(build_type_sym(
+            query_match,
+            capture.node,
+            src,
+            indices.trait_node,
+            SymbolKind::Trait,
+        )),
+        _ => None,
+    }
+}
+
 fn parse_symbols(
     root: tree_sitter::Node,
     src: &[u8],
@@ -220,37 +320,11 @@ fn parse_symbols(
     symbols: &mut Vec<Symbol>,
 ) -> Result<()> {
     let query = Query::new(lang, SYMBOL_QUERY).context("Invalid PHP symbol query")?;
+    let indices = php_symbol_capture_indices(&query);
 
-    for_each_match(&query, root, src, |m, q, _| {
-        let fn_n = q.capture_index_for_name("fn_name").unwrap();
-        let fn_p = q.capture_index_for_name("fn_params").unwrap();
-        let fn_nd = q.capture_index_for_name("fn_node").unwrap();
-        let mn = q.capture_index_for_name("method_name").unwrap();
-        let mp = q.capture_index_for_name("method_params").unwrap();
-        let mnd = q.capture_index_for_name("method_node").unwrap();
-        let cn = q.capture_index_for_name("class_name").unwrap();
-        let cnd = q.capture_index_for_name("class_node").unwrap();
-        let iface_n = q.capture_index_for_name("iface_name").unwrap();
-        let iface_nd = q.capture_index_for_name("iface_node").unwrap();
-        let tn = q.capture_index_for_name("trait_name").unwrap();
-        let tnd = q.capture_index_for_name("trait_node").unwrap();
-
+    for_each_match(&query, root, src, |m, _, _| {
         for cap in m.captures {
-            let sym = match cap.index {
-                i if i == fn_n => Some(build_fn_sym(m, cap.node, src, fn_nd, fn_p)),
-                i if i == mn => Some(build_method_sym(m, cap.node, src, mnd, mp)),
-                i if i == cn => Some(build_type_sym(m, cap.node, src, cnd, SymbolKind::Class)),
-                i if i == iface_n => Some(build_type_sym(
-                    m,
-                    cap.node,
-                    src,
-                    iface_nd,
-                    SymbolKind::Interface,
-                )),
-                i if i == tn => Some(build_type_sym(m, cap.node, src, tnd, SymbolKind::Trait)),
-                _ => None,
-            };
-            if let Some(s) = sym {
+            if let Some(s) = build_php_symbol_for_capture(m, cap, src, indices) {
                 symbols.push(s);
             }
         }
