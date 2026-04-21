@@ -515,6 +515,53 @@ fn extract_macro_body_calls(
         .collect()
 }
 
+struct MacroCallContext<'a> {
+    macro_node: tree_sitter::Node<'a>,
+    line: usize,
+    target_name: String,
+}
+
+fn resolve_macro_call_context<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    src: &[u8],
+    macro_name_idx: u32,
+    macro_node_idx: u32,
+) -> Option<MacroCallContext<'a>> {
+    let macro_name = capture_text_by_idx(query_match, macro_name_idx, src)?;
+    let macro_node = capture_node_by_idx(query_match, macro_node_idx)?;
+    Some(MacroCallContext {
+        line: macro_node.start_position().row,
+        target_name: format!("{macro_name}!"),
+        macro_node,
+    })
+}
+
+fn push_macro_invocation_ref(
+    references: &mut Vec<Reference>,
+    context: &MacroCallContext<'_>,
+    source_symbol_name: Option<String>,
+) {
+    references.push(make_call_ref(
+        &context.target_name,
+        None,
+        context.line,
+        source_symbol_name,
+    ));
+}
+
+fn extend_macro_body_refs(
+    references: &mut Vec<Reference>,
+    context: &MacroCallContext<'_>,
+    src: &[u8],
+    source_symbol_name: Option<String>,
+) {
+    references.extend(
+        extract_macro_body_calls(context.macro_node, src, source_symbol_name)
+            .into_iter()
+            .filter(|call| call.target_name != context.target_name),
+    );
+}
+
 fn push_macro_refs(
     query_match: &tree_sitter::QueryMatch,
     src: &[u8],
@@ -523,22 +570,14 @@ fn push_macro_refs(
     macro_node_idx: u32,
     source_symbol_name: Option<String>,
 ) {
-    let macro_name = capture_text_by_idx(query_match, macro_name_idx, src).unwrap_or("");
-    let macro_node = capture_node_by_idx(query_match, macro_node_idx).unwrap();
-    let line = macro_node.start_position().row;
-    let target_name = format!("{macro_name}!");
+    let Some(context) =
+        resolve_macro_call_context(query_match, src, macro_name_idx, macro_node_idx)
+    else {
+        return;
+    };
 
-    references.push(make_call_ref(
-        &target_name,
-        None,
-        line,
-        source_symbol_name.clone(),
-    ));
-    references.extend(
-        extract_macro_body_calls(macro_node, src, source_symbol_name)
-            .into_iter()
-            .filter(|call| call.target_name != target_name),
-    );
+    push_macro_invocation_ref(references, &context, source_symbol_name.clone());
+    extend_macro_body_refs(references, &context, src, source_symbol_name);
 }
 
 fn find_macro_token_tree(macro_node: tree_sitter::Node) -> Option<tree_sitter::Node> {
