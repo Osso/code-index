@@ -138,7 +138,11 @@ fn extract_superclasses(
     }
 }
 
-fn superclass_reference(node: tree_sitter::Node, src: &[u8], class_name: &str) -> Option<Reference> {
+fn superclass_reference(
+    node: tree_sitter::Node,
+    src: &[u8],
+    class_name: &str,
+) -> Option<Reference> {
     match node.kind() {
         "identifier" => Some(Reference {
             kind: RefKind::Inherit,
@@ -162,6 +166,32 @@ fn superclass_reference(node: tree_sitter::Node, src: &[u8], class_name: &str) -
     }
 }
 
+fn maybe_extract_superclasses(
+    m: &tree_sitter::QueryMatch,
+    sc_idx: Option<u32>,
+    src: &[u8],
+    class_name: &str,
+    references: &mut Vec<Reference>,
+) {
+    let Some(sc_node) = sc_idx.and_then(|idx| cap_node(m, idx)) else {
+        return;
+    };
+    extract_superclasses(sc_node, src, class_name, references);
+}
+
+fn build_class_sym(name: String, class_node: tree_sitter::Node) -> Symbol {
+    Symbol {
+        name,
+        kind: SymbolKind::Class,
+        line_start: class_node.start_position().row,
+        line_end: class_node.end_position().row,
+        parent_name: None,
+        visibility: None,
+        signature: None,
+        is_test: false,
+    }
+}
+
 fn parse_symbols(
     root: tree_sitter::Node,
     src: &[u8],
@@ -182,25 +212,15 @@ fn parse_symbols(
         for cap in m.captures {
             if cap.index == fn_name_idx {
                 symbols.push(build_fn_sym(m, cap.node, src, fn_node_idx, fn_params_idx));
-            } else if cap.index == class_name_idx {
-                let name = node_text(cap.node, src).to_string();
-                let class_node = cap_node(m, class_node_idx).unwrap_or(cap.node);
-                if let Some(si) = sc_idx {
-                    if let Some(sc_node) = cap_node(m, si) {
-                        extract_superclasses(sc_node, src, &name, references);
-                    }
-                }
-                symbols.push(Symbol {
-                    name,
-                    kind: SymbolKind::Class,
-                    line_start: class_node.start_position().row,
-                    line_end: class_node.end_position().row,
-                    parent_name: None,
-                    visibility: None,
-                    signature: None,
-                    is_test: false,
-                });
+                continue;
             }
+            if cap.index != class_name_idx {
+                continue;
+            }
+            let name = node_text(cap.node, src).to_string();
+            let class_node = cap_node(m, class_node_idx).unwrap_or(cap.node);
+            maybe_extract_superclasses(m, sc_idx, src, &name, references);
+            symbols.push(build_class_sym(name, class_node));
         }
     });
     Ok(())
