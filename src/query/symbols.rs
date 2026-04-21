@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{params, types::ToSql};
 
 use crate::db::Database;
 use crate::model::StoredSymbol;
 
 use super::common::{map_stored_symbol, parse_qualified_name};
+
+type SqlParam = Box<dyn ToSql>;
 
 /// Find symbol definitions by name, optionally filtered by kind and file.
 pub fn find_symbols(
@@ -15,7 +17,21 @@ pub fn find_symbols(
 ) -> Result<Vec<StoredSymbol>> {
     let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
+    let (sql, param_values) = build_find_symbols_query(bare_name, qualifier, kind, file);
 
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), map_stored_symbol)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("Failed to query symbols")
+}
+
+fn build_find_symbols_query(
+    bare_name: &str,
+    qualifier: Option<&str>,
+    kind: Option<&str>,
+    file: Option<&str>,
+) -> (String, Vec<SqlParam>) {
     let mut sql = if qualifier.is_some() {
         String::from(
             "SELECT s.id, f.path, s.name, s.kind, s.line_start, s.line_end, s.visibility, s.signature
@@ -30,30 +46,21 @@ pub fn find_symbols(
              WHERE s.name = ?1",
         )
     };
-
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    param_values.push(Box::new(bare_name.to_string()));
+    let mut param_values: Vec<SqlParam> = vec![Box::new(bare_name.to_string())];
     if let Some(q) = qualifier {
         param_values.push(Box::new(q.to_string()));
     }
-    let next_idx = param_values.len() + 1;
-
     if let Some(k) = kind {
+        let next_idx = param_values.len() + 1;
         sql.push_str(&format!(" AND s.kind = ?{next_idx}"));
         param_values.push(Box::new(k.to_string()));
     }
-    let next_idx = param_values.len() + 1;
     if let Some(f) = file {
+        let next_idx = param_values.len() + 1;
         sql.push_str(&format!(" AND f.path LIKE '%' || ?{next_idx} || '%'"));
         param_values.push(Box::new(f.to_string()));
     }
-
-    let mut stmt = conn.prepare(&sql)?;
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|p| p.as_ref()).collect();
-    let rows = stmt.query_map(param_refs.as_slice(), map_stored_symbol)?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .context("Failed to query symbols")
+    (sql, param_values)
 }
 
 /// List all symbols, optionally filtered by kind and/or file.
