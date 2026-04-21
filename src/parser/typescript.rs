@@ -235,6 +235,120 @@ fn build_type_sym(
     }
 }
 
+#[derive(Clone, Copy)]
+struct TsSymbolCaptureIndices {
+    fn_name: u32,
+    fn_params: u32,
+    fn_node: u32,
+    class_name: u32,
+    class_node: u32,
+    abstract_class_name: u32,
+    abstract_class_node: u32,
+    iface_name: u32,
+    iface_node: u32,
+    method_name: u32,
+    method_params: u32,
+    method_node: u32,
+    enum_name: u32,
+    enum_node: u32,
+}
+
+fn ts_symbol_capture_indices(query: &Query) -> TsSymbolCaptureIndices {
+    TsSymbolCaptureIndices {
+        fn_name: query.capture_index_for_name("fn_name").unwrap(),
+        fn_params: query.capture_index_for_name("fn_params").unwrap(),
+        fn_node: query.capture_index_for_name("fn_node").unwrap(),
+        class_name: query.capture_index_for_name("class_name").unwrap(),
+        class_node: query.capture_index_for_name("class_node").unwrap(),
+        abstract_class_name: query.capture_index_for_name("abstract_class_name").unwrap(),
+        abstract_class_node: query.capture_index_for_name("abstract_class_node").unwrap(),
+        iface_name: query.capture_index_for_name("iface_name").unwrap(),
+        iface_node: query.capture_index_for_name("iface_node").unwrap(),
+        method_name: query.capture_index_for_name("method_name").unwrap(),
+        method_params: query.capture_index_for_name("method_params").unwrap(),
+        method_node: query.capture_index_for_name("method_node").unwrap(),
+        enum_name: query.capture_index_for_name("enum_name").unwrap(),
+        enum_node: query.capture_index_for_name("enum_node").unwrap(),
+    }
+}
+
+fn build_ts_symbol_for_capture<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    capture_index: u32,
+    capture_node: tree_sitter::Node<'a>,
+    src: &[u8],
+    indices: TsSymbolCaptureIndices,
+) -> Option<Symbol> {
+    build_ts_callable_or_class_symbol(query_match, capture_index, capture_node, src, indices)
+        .or_else(|| build_ts_type_symbol(query_match, capture_index, capture_node, src, indices))
+}
+
+fn build_ts_callable_or_class_symbol<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    capture_index: u32,
+    capture_node: tree_sitter::Node<'a>,
+    src: &[u8],
+    indices: TsSymbolCaptureIndices,
+) -> Option<Symbol> {
+    match capture_index {
+        i if i == indices.fn_name => Some(build_fn_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.fn_node,
+            indices.fn_params,
+        )),
+        i if i == indices.class_name => Some(build_class_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.class_node,
+            extract_ts_export(capture_node),
+        )),
+        i if i == indices.abstract_class_name => Some(build_class_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.abstract_class_node,
+            Some("abstract".into()),
+        )),
+        i if i == indices.method_name => Some(build_method_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.method_node,
+            indices.method_params,
+        )),
+        _ => None,
+    }
+}
+
+fn build_ts_type_symbol<'a>(
+    query_match: &tree_sitter::QueryMatch<'_, 'a>,
+    capture_index: u32,
+    capture_node: tree_sitter::Node<'a>,
+    src: &[u8],
+    indices: TsSymbolCaptureIndices,
+) -> Option<Symbol> {
+    match capture_index {
+        i if i == indices.iface_name => Some(build_type_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.iface_node,
+            SymbolKind::Interface,
+        )),
+        i if i == indices.enum_name => Some(build_type_sym(
+            query_match,
+            capture_node,
+            src,
+            indices.enum_node,
+            SymbolKind::Enum,
+        )),
+        _ => None,
+    }
+}
+
 fn parse_symbols(
     root: tree_sitter::Node,
     src: &[u8],
@@ -242,53 +356,13 @@ fn parse_symbols(
     symbols: &mut Vec<Symbol>,
 ) -> Result<()> {
     let query = Query::new(lang, SYMBOL_QUERY).context("Invalid TS symbol query")?;
+    let indices = ts_symbol_capture_indices(&query);
 
-    for_each_match(&query, root, src, |m, q, _| {
-        let fn_n = q.capture_index_for_name("fn_name").unwrap();
-        let fn_p = q.capture_index_for_name("fn_params").unwrap();
-        let fn_nd = q.capture_index_for_name("fn_node").unwrap();
-        let cn = q.capture_index_for_name("class_name").unwrap();
-        let cnd = q.capture_index_for_name("class_node").unwrap();
-        let acn = q.capture_index_for_name("abstract_class_name").unwrap();
-        let acnd = q.capture_index_for_name("abstract_class_node").unwrap();
-        let iface_n = q.capture_index_for_name("iface_name").unwrap();
-        let iface_nd = q.capture_index_for_name("iface_node").unwrap();
-        let mn = q.capture_index_for_name("method_name").unwrap();
-        let mp = q.capture_index_for_name("method_params").unwrap();
-        let mnd = q.capture_index_for_name("method_node").unwrap();
-        let en = q.capture_index_for_name("enum_name").unwrap();
-        let end = q.capture_index_for_name("enum_node").unwrap();
-
+    for_each_match(&query, root, src, |m, _, _| {
         for cap in m.captures {
-            let sym = match cap.index {
-                i if i == fn_n => Some(build_fn_sym(m, cap.node, src, fn_nd, fn_p)),
-                i if i == cn => Some(build_class_sym(
-                    m,
-                    cap.node,
-                    src,
-                    cnd,
-                    extract_ts_export(cap.node),
-                )),
-                i if i == acn => Some(build_class_sym(
-                    m,
-                    cap.node,
-                    src,
-                    acnd,
-                    Some("abstract".into()),
-                )),
-                i if i == iface_n => Some(build_type_sym(
-                    m,
-                    cap.node,
-                    src,
-                    iface_nd,
-                    SymbolKind::Interface,
-                )),
-                i if i == mn => Some(build_method_sym(m, cap.node, src, mnd, mp)),
-                i if i == en => Some(build_type_sym(m, cap.node, src, end, SymbolKind::Enum)),
-                _ => None,
-            };
-            if let Some(s) = sym {
-                symbols.push(s);
+            if let Some(symbol) = build_ts_symbol_for_capture(m, cap.index, cap.node, src, indices)
+            {
+                symbols.push(symbol);
             }
         }
     });
