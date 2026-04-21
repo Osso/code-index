@@ -387,6 +387,10 @@ fn cmd_status(path: Option<&str>) -> Result<()> {
 }
 
 fn cmd_project(action: ProjectAction) -> Result<()> {
+    run_project_action(action)
+}
+
+fn run_project_action(action: ProjectAction) -> Result<()> {
     match action {
         ProjectAction::Add { name, path } => cmd_project_add(&name, path)?,
         ProjectAction::Remove { name } => cmd_project_remove(&name)?,
@@ -396,13 +400,17 @@ fn cmd_project(action: ProjectAction) -> Result<()> {
 }
 
 fn cmd_project_add(name: &str, path: Option<String>) -> Result<()> {
-    let dir = match path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => std::env::current_dir()?,
-    };
+    let dir = resolve_project_registration_dir(path)?;
     config::add_project(name, &dir)?;
     println!("Registered project '{}' at {}", name, dir.display());
     Ok(())
+}
+
+fn resolve_project_registration_dir(path: Option<String>) -> Result<std::path::PathBuf> {
+    match path {
+        Some(p) => Ok(std::path::PathBuf::from(p)),
+        None => std::env::current_dir().map_err(Into::into),
+    }
 }
 
 fn cmd_project_remove(name: &str) -> Result<()> {
@@ -416,18 +424,27 @@ fn cmd_project_remove(name: &str) -> Result<()> {
 
 fn cmd_project_list() -> Result<()> {
     let config = config::load()?;
-    if config.projects.is_empty() {
+    print_project_entries(&config.projects);
+    Ok(())
+}
+
+fn print_project_entries(projects: &std::collections::BTreeMap<String, config::ProjectEntry>) {
+    if projects.is_empty() {
         println!("No projects registered.");
-        return Ok(());
+        return;
     }
-    for (name, entry) in &config.projects {
-        let db_file = std::path::Path::new(&entry.path).join(".code-index.db");
-        let status = if db_file.exists() {
-            "indexed"
-        } else {
-            "not indexed"
-        };
+
+    for (name, entry) in projects {
+        let status = project_index_status(&entry.path);
         println!("{name}: {} ({status})", entry.path);
     }
-    Ok(())
+}
+
+fn project_index_status(project_path: &str) -> &'static str {
+    let db_file = std::path::Path::new(project_path).join(".code-index.db");
+    if db_file.exists() {
+        "indexed"
+    } else {
+        "not indexed"
+    }
 }
