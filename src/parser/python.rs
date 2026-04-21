@@ -357,16 +357,25 @@ fn parse_imports(
 fn find_parent_class_py<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        if parent.kind() == "class_definition" {
-            for i in 0..parent.child_count() {
-                if let Some(child) = parent.child(i) {
-                    if child.kind() == "identifier" {
-                        return Some(node_text(child, src).to_string());
-                    }
-                }
-            }
+        if let Some(name) = parent_class_name(parent, src) {
+            return Some(name);
         }
         current = parent.parent();
+    }
+    None
+}
+
+fn parent_class_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if node.kind() != "class_definition" {
+        return None;
+    }
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() == "identifier" {
+            return Some(node_text(child, src).to_string());
+        }
     }
     None
 }
