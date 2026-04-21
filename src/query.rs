@@ -184,8 +184,13 @@ fn query_callers(db: &Database, name: &str, file: Option<&str>) -> Result<Vec<Ca
 fn query_callers_by_name(db: &Database, name: &str) -> Result<Vec<CallInfo>> {
     let (bare_name, qualifier) = parse_qualified_name(name);
     let conn = db.conn();
+    let sql = callers_by_name_sql(qualifier.is_some());
+    let mut stmt = conn.prepare(sql)?;
+    execute_callers_by_name_query(&mut stmt, bare_name, qualifier)
+}
 
-    let sql = if qualifier.is_some() {
+fn callers_by_name_sql(has_qualifier: bool) -> &'static str {
+    if has_qualifier {
         "SELECT DISTINCT s.name, f.path, r.line, r.kind
          FROM refs r
          JOIN files f ON r.source_file_id = f.id
@@ -197,9 +202,14 @@ fn query_callers_by_name(db: &Database, name: &str) -> Result<Vec<CallInfo>> {
          JOIN files f ON r.source_file_id = f.id
          LEFT JOIN symbols s ON r.source_symbol_id = s.id
          WHERE r.target_name = ?1 AND r.kind = 'call'"
-    };
+    }
+}
 
-    let mut stmt = conn.prepare(sql)?;
+fn execute_callers_by_name_query(
+    stmt: &mut rusqlite::Statement<'_>,
+    bare_name: &str,
+    qualifier: Option<&str>,
+) -> Result<Vec<CallInfo>> {
     let rows = if let Some(q) = qualifier {
         stmt.query_map(params![bare_name, q], map_call_info)?
     } else {
@@ -216,7 +226,8 @@ fn resolve_symbol_ids_in_file(
 ) -> Result<Vec<i64>> {
     let (bare_name, qualifier) = parse_qualified_name(name);
 
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(q) = qualifier {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(q) = qualifier
+    {
         (
             "SELECT s.id
              FROM symbols s
