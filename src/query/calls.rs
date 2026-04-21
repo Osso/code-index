@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{params, types::ToSql};
 
 use crate::db::Database;
 use crate::model::CallInfo;
 
 use super::common::parse_qualified_name;
+
+type SqlParam = Box<dyn ToSql>;
 
 /// Find callers of a function/method (who calls this symbol).
 pub fn find_callers(
@@ -106,9 +108,16 @@ fn resolve_symbol_ids_in_file(
     target_file: &str,
 ) -> Result<Vec<i64>> {
     let (bare_name, qualifier) = parse_qualified_name(name);
+    let (sql, params_vec) = symbol_id_query_and_params(bare_name, qualifier, target_file);
+    query_symbol_ids(conn, sql, params_vec)
+}
 
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(q) = qualifier
-    {
+fn symbol_id_query_and_params(
+    bare_name: &str,
+    qualifier: Option<&str>,
+    target_file: &str,
+) -> (&'static str, Vec<SqlParam>) {
+    if let Some(q) = qualifier {
         (
             "SELECT s.id
              FROM symbols s
@@ -118,7 +127,7 @@ fn resolve_symbol_ids_in_file(
              AND f.path LIKE '%' || ?2 || '%'
              AND p.name = ?3",
             vec![
-                Box::new(bare_name.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(bare_name.to_string()) as SqlParam,
                 Box::new(target_file.to_string()),
                 Box::new(q.to_string()),
             ],
@@ -131,15 +140,20 @@ fn resolve_symbol_ids_in_file(
              WHERE s.name = ?1
              AND f.path LIKE '%' || ?2 || '%'",
             vec![
-                Box::new(bare_name.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(bare_name.to_string()) as SqlParam,
                 Box::new(target_file.to_string()),
             ],
         )
-    };
+    }
+}
 
+fn query_symbol_ids(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params_vec: Vec<SqlParam>,
+) -> Result<Vec<i64>> {
     let mut id_stmt = conn.prepare(sql)?;
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     id_stmt
         .query_map(param_refs.as_slice(), |row| row.get::<_, i64>(0))?
         .collect::<Result<Vec<_>, _>>()
