@@ -286,75 +286,160 @@ fn parse_calls(
     references: &mut Vec<Reference>,
 ) -> Result<()> {
     let query = Query::new(lang, CALL_QUERY).context("Invalid call query")?;
-    for_each_match(&query, root, src, |query_match, query, _| {
-        parse_call_match(query_match, query, src, symbols, references)
+    let indices = call_capture_indices(&query);
+    for_each_match(&query, root, src, |query_match, _, _| {
+        parse_call_match(query_match, src, symbols, references, indices)
     });
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct CallCaptureIndices {
+    call_name: u32,
+    method_name: u32,
+    method_call_node: u32,
+    scoped_function: u32,
+    macro_name: u32,
+    macro_node: u32,
+}
+
+fn call_capture_indices(query: &Query) -> CallCaptureIndices {
+    CallCaptureIndices {
+        call_name: query.capture_index_for_name("call_name").unwrap(),
+        method_name: query.capture_index_for_name("method_name").unwrap(),
+        method_call_node: query.capture_index_for_name("method_call_node").unwrap(),
+        scoped_function: query.capture_index_for_name("scoped_function").unwrap(),
+        macro_name: query.capture_index_for_name("macro_name").unwrap(),
+        macro_node: query.capture_index_for_name("macro_node").unwrap(),
+    }
+}
+
 fn parse_call_match(
     query_match: &tree_sitter::QueryMatch,
-    query: &Query,
     src: &[u8],
     symbols: &[Symbol],
     references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
 ) {
-    let call_name_idx = query.capture_index_for_name("call_name").unwrap();
-    let method_name_idx = query.capture_index_for_name("method_name").unwrap();
-    let method_call_node_idx = query.capture_index_for_name("method_call_node").unwrap();
-    let scoped_function_idx = query.capture_index_for_name("scoped_function").unwrap();
-    let macro_name_idx = query.capture_index_for_name("macro_name").unwrap();
-    let macro_node_idx = query.capture_index_for_name("macro_node").unwrap();
-
     for capture in query_match.captures {
-        let line = capture.node.start_position().row;
-        let source_symbol_name = find_enclosing_symbol(symbols, line);
-
-        if capture.index == call_name_idx {
-            references.push(make_call_ref(
-                node_text(capture.node, src),
-                None,
-                line,
-                source_symbol_name,
-            ));
+        let call_capture = make_call_capture(capture, symbols);
+        if handle_direct_call_capture(&call_capture, src, references, indices) {
             continue;
         }
-
-        if capture.index == method_name_idx {
-            let method_name = node_text(capture.node, src);
-            references.push(make_call_ref(
-                method_name,
-                None,
-                line,
-                source_symbol_name.clone(),
-            ));
-            references.extend(extract_registration_function_refs(
-                query_match,
-                method_name,
-                method_call_node_idx,
-                src,
-                source_symbol_name,
-            ));
+        if handle_method_call_capture(query_match, &call_capture, src, references, indices) {
             continue;
         }
-
-        if capture.index == scoped_function_idx {
-            let (name, qualifier) = split_scoped_call(node_text(capture.node, src));
-            references.push(make_call_ref(name, qualifier, line, source_symbol_name));
+        if handle_scoped_call_capture(&call_capture, src, references, indices) {
             continue;
         }
-
-        if capture.index == macro_name_idx {
-            push_macro_refs(
-                query_match,
-                src,
-                references,
-                macro_name_idx,
-                macro_node_idx,
-                source_symbol_name,
-            );
-        }
+        handle_macro_call_capture(query_match, &call_capture, src, references, indices);
     }
+}
+
+#[derive(Clone)]
+struct CallCapture<'a> {
+    index: u32,
+    node: tree_sitter::Node<'a>,
+    line: usize,
+    source_symbol_name: Option<String>,
+}
+
+fn make_call_capture<'a>(
+    capture: &tree_sitter::QueryCapture<'a>,
+    symbols: &[Symbol],
+) -> CallCapture<'a> {
+    let line = capture.node.start_position().row;
+    let source_symbol_name = find_enclosing_symbol(symbols, line);
+    CallCapture {
+        index: capture.index,
+        node: capture.node,
+        line,
+        source_symbol_name,
+    }
+}
+
+fn handle_macro_call_capture(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &CallCapture<'_>,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
+) {
+    if capture.index != indices.macro_name {
+        return;
+    }
+    push_macro_refs(
+        query_match,
+        src,
+        references,
+        indices.macro_name,
+        indices.macro_node,
+        capture.source_symbol_name.clone(),
+    );
+}
+
+fn handle_direct_call_capture(
+    capture: &CallCapture<'_>,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
+) -> bool {
+    if capture.index != indices.call_name {
+        return false;
+    }
+    references.push(make_call_ref(
+        node_text(capture.node, src),
+        None,
+        capture.line,
+        capture.source_symbol_name.clone(),
+    ));
+    true
+}
+
+fn handle_method_call_capture(
+    query_match: &tree_sitter::QueryMatch,
+    capture: &CallCapture<'_>,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
+) -> bool {
+    if capture.index != indices.method_name {
+        return false;
+    }
+    let method_name = node_text(capture.node, src);
+    references.push(make_call_ref(
+        method_name,
+        None,
+        capture.line,
+        capture.source_symbol_name.clone(),
+    ));
+    references.extend(extract_registration_function_refs(
+        query_match,
+        method_name,
+        indices.method_call_node,
+        src,
+        capture.source_symbol_name.clone(),
+    ));
+    true
+}
+
+fn handle_scoped_call_capture(
+    capture: &CallCapture<'_>,
+    src: &[u8],
+    references: &mut Vec<Reference>,
+    indices: CallCaptureIndices,
+) -> bool {
+    if capture.index != indices.scoped_function {
+        return false;
+    }
+    let (name, qualifier) = split_scoped_call(node_text(capture.node, src));
+    references.push(make_call_ref(
+        name,
+        qualifier,
+        capture.line,
+        capture.source_symbol_name.clone(),
+    ));
+    true
 }
 
 fn extract_registration_function_refs(
