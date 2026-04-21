@@ -168,12 +168,17 @@ fn query_callers_by_file(db: &Database, name: &str, target_file: &str) -> Result
     if target_ids.is_empty() {
         return Ok(Vec::new());
     }
+    let sql = callers_by_file_sql(target_ids.len());
+    let query_params = callers_by_file_params(target_ids, bare_name);
+    execute_callers_by_file_query(conn, &sql, query_params)
+}
 
+fn callers_by_file_sql(target_id_count: usize) -> String {
     let placeholders = std::iter::repeat("?")
-        .take(target_ids.len())
+        .take(target_id_count)
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!(
+    format!(
         "SELECT DISTINCT s.name, f.path, r.line, r.kind
          FROM refs r
          JOIN files f ON r.source_file_id = f.id
@@ -184,17 +189,25 @@ fn query_callers_by_file(db: &Database, name: &str, target_file: &str) -> Result
             OR (r.target_symbol_id IS NULL AND r.target_name = ?)
          )",
         placeholders
-    );
+    )
+}
 
-    let mut stmt = conn.prepare(&sql)?;
-    let mut dyn_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+fn callers_by_file_params(target_ids: Vec<i64>, bare_name: &str) -> Vec<SqlParam> {
+    let mut params: Vec<SqlParam> = Vec::new();
     for id in target_ids {
-        dyn_params.push(Box::new(id));
+        params.push(Box::new(id));
     }
-    dyn_params.push(Box::new(bare_name.to_string()));
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        dyn_params.iter().map(|p| p.as_ref()).collect();
+    params.push(Box::new(bare_name.to_string()));
+    params
+}
 
+fn execute_callers_by_file_query(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: Vec<SqlParam>,
+) -> Result<Vec<CallInfo>> {
+    let mut stmt = conn.prepare(sql)?;
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), map_call_info)?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query callers")
