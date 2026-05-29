@@ -9,7 +9,11 @@ mod query;
 mod resolver;
 mod watcher;
 
-use anyhow::Result;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -48,6 +52,9 @@ enum Command {
         file: Option<String>,
         #[arg(long, default_value = "1")]
         depth: u32,
+        /// Also run ast-outline once over the definition and caller files
+        #[arg(long)]
+        outline: bool,
         /// Project path override
         #[arg(long)]
         path: Option<String>,
@@ -236,8 +243,9 @@ fn dispatch_symbol_call_command(command: Command) -> Result<()> {
             name,
             file,
             depth,
+            outline,
             path,
-        } => cmd_callers(path.as_deref(), &name, file.as_deref(), depth)?,
+        } => cmd_callers(path.as_deref(), &name, file.as_deref(), depth, outline)?,
         Command::Callees {
             name,
             file,
@@ -335,11 +343,70 @@ fn cmd_symbol(
     Ok(())
 }
 
-fn cmd_callers(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+fn cmd_callers(
+    path: Option<&str>,
+    name: &str,
+    file: Option<&str>,
+    depth: u32,
+    outline: bool,
+) -> Result<()> {
+    let project_dir = project::resolve_project_dir(path)?;
+    let db = db::Database::open(&project::db_path(&project_dir))?;
     let callers = query::find_callers(&db, name, file, depth)?;
     let json = serde_json::to_string_pretty(&callers)?;
     println!("{json}");
+    if outline {
+        let definitions = query::find_symbols(&db, name, None, file)?;
+        let outline_files = build_outline_file_args(&project_dir, &definitions, &callers);
+        run_ast_outline(&project_dir, &outline_files)?;
+    }
+    Ok(())
+}
+
+fn build_outline_file_args(
+    project_dir: &Path,
+    definitions: &[model::StoredSymbol],
+    callers: &[model::CallInfo],
+) -> Vec<String> {
+    let mut files = BTreeSet::new();
+    for file_path in definitions
+        .iter()
+        .map(|symbol| symbol.file_path.as_str())
+        .chain(callers.iter().map(|caller| caller.file_path.as_str()))
+    {
+        files.insert(resolve_outline_file(project_dir, file_path));
+    }
+    files
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
+fn resolve_outline_file(project_dir: &Path, file_path: &str) -> PathBuf {
+    let path = Path::new(file_path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_dir.join(path)
+    }
+}
+
+fn run_ast_outline(project_dir: &Path, files: &[String]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    println!("\n--- ast-outline ---");
+    let status = ProcessCommand::new("ast-outline")
+        .args(files)
+        .current_dir(project_dir)
+        .status()
+        .with_context(|| "failed to run ast-outline")?;
+
+    if !status.success() {
+        bail!("ast-outline exited with {status}");
+    }
+
     Ok(())
 }
 
@@ -373,6 +440,45 @@ fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<
     let json = serde_json::to_string_pretty(&refs)?;
     println!("{json}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{CallInfo, StoredSymbol};
+    use std::path::Path;
+
+    #[test]
+    fn outline_file_args_include_definition_and_unique_callers() {
+        let definitions = vec![StoredSymbol {
+            id: 1,
+            file_path: "src/base.php".to_string(),
+            name: "blockedReleaseResponse".to_string(),
+            kind: "method".to_string(),
+            line_start: 10,
+            line_end: 20,
+            visibility: None,
+            signature: None,
+        }];
+        let callers = vec![
+            CallInfo {
+                symbol_name: "handle_pages".to_string(),
+                file_path: "src/releases.php".to_string(),
+                line: 30,
+                kind: "call".to_string(),
+            },
+            CallInfo {
+                symbol_name: "handle_fragments".to_string(),
+                file_path: "src/releases.php".to_string(),
+                line: 40,
+                kind: "call".to_string(),
+            },
+        ];
+
+        let files = build_outline_file_args(Path::new("/repo"), &definitions, &callers);
+
+        assert_eq!(files, vec!["/repo/src/base.php", "/repo/src/releases.php"]);
+    }
 }
 
 fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
