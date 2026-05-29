@@ -336,7 +336,7 @@ fn cmd_symbol(
     kind: Option<&str>,
     file: Option<&str>,
 ) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let symbols = query::find_symbols(&db, name, kind, file)?;
     let json = serde_json::to_string_pretty(&symbols)?;
     println!("{json}");
@@ -350,8 +350,7 @@ fn cmd_callers(
     depth: u32,
     outline: bool,
 ) -> Result<()> {
-    let project_dir = project::resolve_project_dir(path)?;
-    let db = db::Database::open(&project::db_path(&project_dir))?;
+    let (project_dir, db) = open_refreshed_database(path)?;
     let callers = query::find_callers(&db, name, file, depth)?;
     let json = serde_json::to_string_pretty(&callers)?;
     println!("{json}");
@@ -360,6 +359,20 @@ fn cmd_callers(
         let outline_files = build_outline_file_args(&project_dir, &definitions, &callers);
         run_ast_outline(&project_dir, &outline_files)?;
     }
+    Ok(())
+}
+
+fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)> {
+    let project_dir = project::resolve_project_dir(path)?;
+    let db = db::Database::open(&project::db_path(&project_dir))?;
+    refresh_project_index(&db, &project_dir)?;
+    Ok((project_dir, db))
+}
+
+fn refresh_project_index(db: &db::Database, project_dir: &Path) -> Result<()> {
+    let dir_str = project_dir.to_string_lossy();
+    indexer::index_directory(db, &dir_str, false)?;
+    resolver::resolve_references(db)?;
     Ok(())
 }
 
@@ -411,7 +424,7 @@ fn run_ast_outline(project_dir: &Path, files: &[String]) -> Result<()> {
 }
 
 fn cmd_callees(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let callees = query::find_callees(&db, name, file, depth)?;
     let json = serde_json::to_string_pretty(&callees)?;
     println!("{json}");
@@ -419,7 +432,7 @@ fn cmd_callees(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -
 }
 
 fn cmd_dead_code(path: Option<&str>, exclude: &[String]) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let dead = query::find_dead_code(&db, None, exclude)?;
     let json = serde_json::to_string_pretty(&dead)?;
     println!("{json}");
@@ -427,7 +440,7 @@ fn cmd_dead_code(path: Option<&str>, exclude: &[String]) -> Result<()> {
 }
 
 fn cmd_hierarchy(path: Option<&str>, name: &str, direction: &str) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let entries = query::find_hierarchy(&db, name, direction)?;
     let json = serde_json::to_string_pretty(&entries)?;
     println!("{json}");
@@ -435,7 +448,7 @@ fn cmd_hierarchy(path: Option<&str>, name: &str, direction: &str) -> Result<()> 
 }
 
 fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let refs = query::find_references(&db, name, kind)?;
     let json = serde_json::to_string_pretty(&refs)?;
     println!("{json}");
@@ -479,10 +492,25 @@ mod tests {
 
         assert_eq!(files, vec!["/repo/src/base.php", "/repo/src/releases.php"]);
     }
+
+    #[test]
+    fn open_refreshed_database_prunes_missing_files_before_queries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing_file = tmp.path().join("missing.rs");
+        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
+        db.upsert_file(missing_file.to_str().unwrap(), "stale", "rust")
+            .unwrap();
+
+        let (_project_dir, db) =
+            open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        let (files, symbols, refs) = db.get_stats().unwrap();
+        assert_eq!((files, symbols, refs), (0, 0, 0));
+    }
 }
 
 fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let tests = query::find_tested_by(&db, name, file, depth)?;
     let json = serde_json::to_string_pretty(&tests)?;
     println!("{json}");
@@ -490,7 +518,7 @@ fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32)
 }
 
 fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let untested = query::find_untested(&db, None, exclude)?;
     let json = serde_json::to_string_pretty(&untested)?;
     println!("{json}");
@@ -498,7 +526,7 @@ fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
 }
 
 fn cmd_imported_by(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let entries = query::find_imported_by(&db, name, file)?;
     let json = serde_json::to_string_pretty(&entries)?;
     println!("{json}");
@@ -506,7 +534,7 @@ fn cmd_imported_by(path: Option<&str>, name: &str, file: Option<&str>) -> Result
 }
 
 fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let imports = query::resolve_import(&db, name, file)?;
     let json = serde_json::to_string_pretty(&imports)?;
     println!("{json}");
@@ -514,7 +542,7 @@ fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Res
 }
 
 fn cmd_list(path: Option<&str>, kind: Option<&str>, file: Option<&str>) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let symbols = query::list_symbols(&db, kind, file)?;
     let json = serde_json::to_string(&symbols)?;
     println!("{json}");
@@ -534,7 +562,7 @@ fn cmd_watch(path: Option<&str>) -> Result<()> {
 }
 
 fn cmd_status(path: Option<&str>) -> Result<()> {
-    let db = db::Database::open(&project::resolve_db(path)?)?;
+    let (_project_dir, db) = open_refreshed_database(path)?;
     let (files, symbols, refs) = db.get_stats()?;
     println!("Files: {files}, Symbols: {symbols}, References: {refs}");
     Ok(())

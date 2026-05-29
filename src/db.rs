@@ -130,6 +130,19 @@ impl Database {
         Ok(result)
     }
 
+    pub fn list_file_paths(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT path FROM files ORDER BY path")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to list indexed files")
+    }
+
+    pub fn delete_file_by_path(&self, path: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
     /// Delete all symbols and refs for a file (before re-indexing)
     pub fn clear_file_data(&self, file_id: i64) -> Result<()> {
         self.conn
@@ -384,6 +397,29 @@ mod tests {
         db.insert_ref(file_id, &reference, Some(sym_id)).unwrap();
 
         db.reset_index().unwrap();
+
+        let (files, symbols, refs) = db.get_stats().unwrap();
+        assert_eq!((files, symbols, refs), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_delete_file_by_path_cascades_index_data() {
+        let db = Database::open_in_memory().unwrap();
+        let file_id = db.upsert_file("/test.rs", "abc", "rust").unwrap();
+
+        let sym = Symbol {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            line_start: 1,
+            line_end: 5,
+            parent_name: None,
+            visibility: None,
+            signature: None,
+            is_test: false,
+        };
+        db.insert_symbol(file_id, &sym, None).unwrap();
+
+        db.delete_file_by_path("/test.rs").unwrap();
 
         let (files, symbols, refs) = db.get_stats().unwrap();
         assert_eq!((files, symbols, refs), (0, 0, 0));

@@ -21,6 +21,8 @@ pub fn index_directory(db: &Database, dir: &str, full: bool) -> Result<IndexStat
     db.begin_transaction()?;
     if full {
         db.reset_index()?;
+    } else {
+        prune_missing_files(db)?;
     }
 
     for entry in walker {
@@ -70,6 +72,17 @@ fn build_walker(path: &Path) -> Result<ignore::Walk> {
     let types = types.build().context("Failed to build file types")?;
 
     Ok(WalkBuilder::new(path).types(types).build())
+}
+
+fn prune_missing_files(db: &Database) -> Result<usize> {
+    let mut removed = 0;
+    for file_path in db.list_file_paths()? {
+        if !Path::new(&file_path).exists() {
+            db.delete_file_by_path(&file_path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn index_single_file(db: &Database, path: &Path, lang: Language, full: bool) -> Result<bool> {
@@ -178,6 +191,22 @@ mod tests {
         let stats2 = index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
         assert_eq!(stats2.indexed, 0);
         assert_eq!(stats2.skipped, 1);
+    }
+
+    #[test]
+    fn test_incremental_index_removes_deleted_files() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("deleted.py");
+        fs::write(&file, "def removed():\n    pass\n").unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+        fs::remove_file(&file).unwrap();
+
+        index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+
+        let (files, symbols, refs) = db.get_stats().unwrap();
+        assert_eq!((files, symbols, refs), (0, 0, 0));
     }
 
     #[test]
