@@ -39,7 +39,7 @@ pub fn resolve_project_dir(explicit_path: Option<&str>) -> Result<PathBuf> {
     }
 
     bail!(
-        "Not indexed: {}\n\n  To index this directory:\n    code-index index\n\n  Or register an existing project:\n    code-index project add <name>\n\n  Supported languages: PHP, Rust, Python, TypeScript",
+        "Not indexed: {}\n\n  To index this directory:\n    code-index index\n\n  Or register an existing project:\n    code-index project add <name>\n\n  Supported languages: PHP, Rust, Python, TypeScript, QML",
         cwd.display()
     )
 }

@@ -1,5 +1,6 @@
 pub mod php;
 pub mod python;
+pub mod qml;
 pub mod rust_lang;
 pub mod typescript;
 
@@ -15,6 +16,7 @@ pub fn parse_file(source: &str, language: Language) -> Result<ParseResult> {
         Language::Rust => rust_lang::parse(source),
         Language::Python => python::parse(source),
         Language::TypeScript => typescript::parse(source),
+        Language::Qml => qml::parse(source),
     }
 }
 

@@ -6,6 +6,7 @@ pub enum Language {
     Rust,
     Python,
     TypeScript,
+    Qml,
 }
 
 impl Language {
@@ -15,6 +16,7 @@ impl Language {
             "rs" => Some(Self::Rust),
             "py" => Some(Self::Python),
             "ts" | "tsx" => Some(Self::TypeScript),
+            "qml" => Some(Self::Qml),
             _ => None,
         }
     }
@@ -25,11 +27,12 @@ impl Language {
             Self::Rust => "rust",
             Self::Python => "python",
             Self::TypeScript => "typescript",
+            Self::Qml => "qml",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SymbolKind {
     Function,
     Method,
@@ -38,6 +41,8 @@ pub enum SymbolKind {
     Interface,
     Struct,
     Enum,
+    Property,
+    Event,
 }
 
 impl SymbolKind {
@@ -50,6 +55,8 @@ impl SymbolKind {
             Self::Interface => "interface",
             Self::Struct => "struct",
             Self::Enum => "enum",
+            Self::Property => "property",
+            Self::Event => "event",
         }
     }
 
@@ -62,6 +69,8 @@ impl SymbolKind {
             "interface" => Some(Self::Interface),
             "struct" => Some(Self::Struct),
             "enum" => Some(Self::Enum),
+            "property" => Some(Self::Property),
+            "event" => Some(Self::Event),
             _ => None,
         }
     }

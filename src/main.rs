@@ -11,9 +11,9 @@ mod watcher;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
+use ast_outline::core::{DigestOptions, OutlineOptions};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -21,6 +21,18 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+struct OutlineCommandOptions<'a> {
+    paths: &'a [PathBuf],
+    digest: bool,
+    no_private: bool,
+    no_fields: bool,
+    no_docs: bool,
+    no_attrs: bool,
+    no_lines: bool,
+    glob: Option<&'a str>,
+    show: &'a [String],
 }
 
 #[derive(Subcommand)]
@@ -52,7 +64,7 @@ enum Command {
         file: Option<String>,
         #[arg(long, default_value = "1")]
         depth: u32,
-        /// Also run ast-outline once over the definition and caller files
+        /// Also print outlines for the definition and caller files
         #[arg(long)]
         outline: bool,
         /// Project path override
@@ -136,7 +148,7 @@ enum Command {
     },
     /// List all indexed symbols
     List {
-        /// Filter by symbol kind (function, method, class, trait, interface, struct, enum)
+        /// Filter by symbol kind (function, method, class, trait, interface, struct, enum, property, event)
         #[arg(long)]
         kind: Option<String>,
         /// Filter by file path (substring match)
@@ -145,6 +157,30 @@ enum Command {
         /// Override project path
         #[arg(long)]
         path: Option<String>,
+    },
+    /// Print structural outlines for files or directories
+    Outline {
+        /// Files or directories to outline
+        #[arg(num_args = 1..)]
+        paths: Vec<PathBuf>,
+        /// Print a compact per-directory digest
+        #[arg(long)]
+        digest: bool,
+        #[arg(long)]
+        no_private: bool,
+        #[arg(long)]
+        no_fields: bool,
+        #[arg(long)]
+        no_docs: bool,
+        #[arg(long)]
+        no_attrs: bool,
+        #[arg(long)]
+        no_lines: bool,
+        #[arg(long)]
+        glob: Option<String>,
+        /// Extract source for a symbol; can be passed multiple times
+        #[arg(long = "show")]
+        show: Vec<String>,
     },
     /// Watch directory and re-index on changes
     Watch {
@@ -201,6 +237,7 @@ fn dispatch(command: Command) -> Result<()> {
         command @ Command::ImportedBy { .. }
         | command @ Command::ResolveImport { .. }
         | command @ Command::List { .. }
+        | command @ Command::Outline { .. }
         | command @ Command::Watch { .. }
         | command @ Command::Status { .. } => dispatch_utility_command(command)?,
     }
@@ -291,6 +328,27 @@ fn dispatch_utility_command(command: Command) -> Result<()> {
         Command::List { kind, file, path } => {
             cmd_list(path.as_deref(), kind.as_deref(), file.as_deref())?
         }
+        Command::Outline {
+            paths,
+            digest,
+            no_private,
+            no_fields,
+            no_docs,
+            no_attrs,
+            no_lines,
+            glob,
+            show,
+        } => cmd_outline(OutlineCommandOptions {
+            paths: &paths,
+            digest,
+            no_private,
+            no_fields,
+            no_docs,
+            no_attrs,
+            no_lines,
+            glob: glob.as_deref(),
+            show: &show,
+        })?,
         Command::Watch { path } => cmd_watch(path.as_deref())?,
         Command::Status { path } => cmd_status(path.as_deref())?,
         _ => unreachable!("non-utility command routed to dispatch_utility_command"),
@@ -357,7 +415,7 @@ fn cmd_callers(
     if outline {
         let definitions = query::find_symbols(&db, name, None, file)?;
         let outline_files = build_outline_file_args(&project_dir, &definitions, &callers);
-        run_ast_outline(&project_dir, &outline_files)?;
+        run_outline(&outline_files)?;
     }
     Ok(())
 }
@@ -404,20 +462,84 @@ fn resolve_outline_file(project_dir: &Path, file_path: &str) -> PathBuf {
     }
 }
 
-fn run_ast_outline(project_dir: &Path, files: &[String]) -> Result<()> {
+fn cmd_outline(options: OutlineCommandOptions<'_>) -> Result<()> {
+    let results = ast_outline::walk_and_parse(options.paths, options.glob);
+    if !options.show.is_empty() {
+        print_outline_symbol_matches(&results, options.show);
+        return Ok(());
+    }
+
+    if options.digest {
+        let digest_options = DigestOptions {
+            include_private: !options.no_private,
+            include_fields: !options.no_fields,
+            max_members_per_type: 50,
+            max_heading_depth: 3,
+        };
+        let root = if options.paths.len() == 1 && options.paths[0].is_dir() {
+            Some(options.paths[0].as_path())
+        } else {
+            None
+        };
+        println!(
+            "{}",
+            ast_outline::core::render_digest(&results, &digest_options, root)
+        );
+        return Ok(());
+    }
+
+    let outline_options = OutlineOptions {
+        include_private: !options.no_private,
+        include_fields: !options.no_fields,
+        include_xml_doc: !options.no_docs,
+        include_attributes: !options.no_attrs,
+        include_line_numbers: !options.no_lines,
+        max_doc_lines: 6,
+    };
+    render_outline_results(&results, &outline_options);
+    Ok(())
+}
+
+fn print_outline_symbol_matches(results: &[ast_outline::core::ParseResult], symbols: &[String]) {
+    for result in results {
+        for symbol in symbols {
+            for symbol_match in ast_outline::core::find_symbols(result, symbol) {
+                println!(
+                    "# {}:{}-{} {} ({})",
+                    result.path.display(),
+                    symbol_match.start_line,
+                    symbol_match.end_line,
+                    symbol_match.qualified_name,
+                    symbol_match.kind
+                );
+                if !symbol_match.ancestor_signatures.is_empty() {
+                    println!("# in: {}", symbol_match.ancestor_signatures.join(" -> "));
+                }
+                println!("{}", symbol_match.source);
+            }
+        }
+    }
+}
+
+fn render_outline_results(results: &[ast_outline::core::ParseResult], options: &OutlineOptions) {
+    for result in results {
+        println!("{}", ast_outline::core::render_outline(result, options));
+        println!();
+    }
+}
+
+fn run_outline(files: &[String]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
 
-    println!("\n--- ast-outline ---");
-    let status = ProcessCommand::new("ast-outline")
-        .args(files)
-        .current_dir(project_dir)
-        .status()
-        .with_context(|| "failed to run ast-outline")?;
-
-    if !status.success() {
-        bail!("ast-outline exited with {status}");
+    println!("\n--- outline ---");
+    let options = OutlineOptions::default();
+    for file in files {
+        let path = Path::new(file);
+        if let Some(result) = ast_outline::parse_file(path) {
+            render_outline_results(&[result], &options);
+        }
     }
 
     Ok(())

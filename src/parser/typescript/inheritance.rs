@@ -17,7 +17,7 @@ fn walk_for_inheritance(node: tree_sitter::Node, src: &[u8], refs: &mut Vec<Refe
     if kind == "class_declaration" || kind == "abstract_class_declaration" {
         let class_name = find_class_name(node, src);
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
+            if let Some(child) = node.child(i as u32) {
                 if child.kind() == "class_heritage" {
                     parse_heritage(child, src, &class_name, refs);
                 }
@@ -25,7 +25,7 @@ fn walk_for_inheritance(node: tree_sitter::Node, src: &[u8], refs: &mut Vec<Refe
         }
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             walk_for_inheritance(child, src, refs);
         }
     }
@@ -38,7 +38,7 @@ fn parse_heritage(
     refs: &mut Vec<Reference>,
 ) {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             match child.kind() {
                 "extends_clause" => emit_heritage(child, src, RefKind::Inherit, cls, refs),
                 "implements_clause" => emit_heritage(child, src, RefKind::Implement, cls, refs),
@@ -56,7 +56,7 @@ fn emit_heritage(
     refs: &mut Vec<Reference>,
 ) {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             let target = match child.kind() {
                 "type_identifier" | "identifier" => Some(node_text(child, src).to_string()),
                 "generic_type" => child.child(0).map(|c| node_text(c, src).to_string()),
@@ -77,7 +77,7 @@ fn emit_heritage(
 
 fn find_class_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if child.kind() == "type_identifier" {
                 return Some(node_text(child, src).to_string());
             }

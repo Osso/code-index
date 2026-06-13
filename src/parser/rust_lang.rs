@@ -480,7 +480,7 @@ fn registration_argument_node<'a>(
 ) -> Option<tree_sitter::Node<'a>> {
     let call_node = capture_node_by_idx(query_match, method_call_node_idx)?;
     let args_node = (0..call_node.child_count())
-        .filter_map(|index| call_node.child(index))
+        .filter_map(|index| call_node.child(index as u32))
         .find(|child| child.kind() == "arguments")?;
 
     let arg_index = match method_name {
@@ -588,7 +588,7 @@ fn push_macro_refs(
 
 fn find_macro_token_tree(macro_node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     (0..macro_node.child_count())
-        .filter_map(|index| macro_node.child(index))
+        .filter_map(|index| macro_node.child(index as u32))
         .find(|child| child.kind() == "token_tree")
 }
 
@@ -683,7 +683,7 @@ fn parent_impl_type_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> 
         return None;
     }
     for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
+        let Some(child) = node.child(i as u32) else {
             continue;
         };
         if child.kind() == "type_identifier" {
@@ -695,7 +695,7 @@ fn parent_impl_type_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> 
 
 fn extract_visibility(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if child.kind() == "visibility_modifier" {
                 return Some(node_text(child, src).to_string());
             }

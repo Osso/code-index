@@ -485,7 +485,7 @@ fn parent_container_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> 
 
 fn find_named_child(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
+        let Some(child) = node.child(i as u32) else {
             continue;
         };
         if child.kind() == "name" {
@@ -497,7 +497,7 @@ fn find_named_child(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
 
 fn extract_php_visibility(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             let kind = child.kind();
             if kind == "visibility_modifier"
                 || kind == "static_modifier"

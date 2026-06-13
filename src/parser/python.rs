@@ -129,7 +129,7 @@ fn extract_superclasses(
     references: &mut Vec<Reference>,
 ) {
     for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
+        let Some(child) = node.child(i as u32) else {
             continue;
         };
         if let Some(reference) = superclass_reference(child, src, class_name) {
@@ -370,7 +370,7 @@ fn parent_class_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
         return None;
     }
     for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
+        let Some(child) = node.child(i as u32) else {
             continue;
         };
         if child.kind() == "identifier" {

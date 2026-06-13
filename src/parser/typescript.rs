@@ -551,7 +551,7 @@ fn extract_ts_export(node: tree_sitter::Node) -> Option<String> {
 
 fn extract_method_vis(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if child.kind() == "accessibility_modifier" {
                 return Some(node_text(child, src).to_string());
             }

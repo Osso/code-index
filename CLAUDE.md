@@ -4,7 +4,7 @@ Structural code analysis tool using tree-sitter AST parsing. Indexes symbols, ca
 
 ## Architecture
 
-- `src/parser/` - Language-specific tree-sitter parsers (PHP, Rust, Python, TypeScript)
+- `src/parser/` - Language-specific tree-sitter parsers (PHP, Rust, Python, TypeScript, QML)
 - `src/indexer.rs` - File walker + parser orchestrator, writes to DB
 - `src/db.rs` - SQLite schema and CRUD operations
 - `src/resolver.rs` - Post-indexing reference resolution (links refs to symbol IDs)
@@ -18,7 +18,7 @@ Structural code analysis tool using tree-sitter AST parsing. Indexes symbols, ca
 
 ## Commands
 
-symbol, callers, callees, references, hierarchy, tested-by, untested, dead-code, imported-by, resolve-import, index, watch, status, project
+symbol, callers, callees, references, hierarchy, tested-by, untested, dead-code, imported-by, resolve-import, outline, index, watch, status, project
 
 ## Testing
 

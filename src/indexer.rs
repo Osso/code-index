@@ -69,6 +69,8 @@ fn build_walker(path: &Path) -> Result<ignore::Walk> {
     types.select("php");
     types.select("py");
     types.select("ts");
+    types.add("qml", "*.qml")?;
+    types.select("qml");
     let types = types.build().context("Failed to build file types")?;
 
     Ok(WalkBuilder::new(path).types(types).build())
@@ -178,6 +180,36 @@ mod tests {
         let (files, symbols, _) = db.get_stats().unwrap();
         assert_eq!(files, 1);
         assert!(symbols >= 1);
+    }
+
+    #[test]
+    fn test_index_qml_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("View.qml");
+        fs::write(
+            &file,
+            r#"
+import QtQuick
+
+Rectangle {
+  property string title: ""
+
+  function activate() {
+    return title
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        let stats = index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+        assert_eq!(stats.indexed, 1);
+        assert_eq!(stats.skipped, 0);
+
+        let (files, symbols, _) = db.get_stats().unwrap();
+        assert_eq!(files, 1);
+        assert!(symbols >= 3);
     }
 
     #[test]
