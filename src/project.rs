@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::config;
 
@@ -26,22 +26,20 @@ pub fn resolve_project_dir(explicit_path: Option<&str>) -> Result<PathBuf> {
         }
     }
 
-    // Walk up from CWD looking for .code-index.db
-    let mut dir = cwd.as_path();
+    find_indexed_ancestor(&cwd).unwrap_or(Ok(cwd))
+}
+
+fn find_indexed_ancestor(cwd: &Path) -> Option<Result<PathBuf>> {
+    let mut dir = cwd;
     loop {
         if dir.join(DB_FILENAME).exists() {
-            return Ok(dir.to_path_buf());
+            return Some(Ok(dir.to_path_buf()));
         }
         match dir.parent() {
             Some(parent) => dir = parent,
-            None => break,
+            None => return None,
         }
     }
-
-    bail!(
-        "Not indexed: {}\n\n  To index this directory:\n    code-index index\n\n  Or register an existing project:\n    code-index project add <name>\n\n  Supported languages: PHP, Rust, Python, TypeScript, QML",
-        cwd.display()
-    )
 }
 
 /// Get the DB file path for a project directory.
@@ -53,4 +51,21 @@ pub fn db_path(project_dir: &Path) -> String {
 pub fn resolve_db(explicit_path: Option<&str>) -> Result<String> {
     let dir = resolve_project_dir(explicit_path)?;
     Ok(db_path(&dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unindexed_cwd_resolves_to_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let resolved = resolve_project_dir(None).unwrap();
+
+        std::env::set_current_dir(old_cwd).unwrap();
+        assert_eq!(resolved, tmp.path());
+    }
 }

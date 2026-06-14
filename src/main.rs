@@ -629,6 +629,20 @@ mod tests {
         let (files, symbols, refs) = db.get_stats().unwrap();
         assert_eq!((files, symbols, refs), (0, 0, 0));
     }
+
+    #[test]
+    fn open_refreshed_database_creates_missing_index_before_queries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "fn indexed_symbol() {}\n").unwrap();
+
+        let (_project_dir, db) =
+            open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        let symbols = query::find_symbols(&db, "indexed_symbol", None, None).unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "indexed_symbol");
+        assert!(tmp.path().join(".code-index.db").exists());
+    }
 }
 
 fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
