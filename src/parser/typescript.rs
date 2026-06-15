@@ -462,6 +462,7 @@ fn build_arrow_sym(
     let name = node_text(nn, src).to_string();
     let fn_node = cap_node(m, ni).unwrap_or(nn);
     let params = cap_text(m, pi, src).unwrap_or("");
+    let is_test = name.starts_with("test");
     Symbol {
         name,
         kind: SymbolKind::Function,
@@ -470,7 +471,7 @@ fn build_arrow_sym(
         parent_name: None,
         visibility,
         signature: Some(format!("{} {}", prefix, params)),
-        is_test: false,
+        is_test,
     }
 }
 
@@ -601,6 +602,31 @@ mod tests {
         let result = parse(src).unwrap();
         assert!(result.symbols.iter().any(|s| s.name == "greet"));
         assert!(result.symbols.iter().any(|s| s.name == "add"));
+    }
+
+    #[test]
+    fn test_parse_plain_test_functions_as_tests() {
+        let src = "function testNotificationRoles() {}\nconst testParser = () => true;\nfunction helper() {}\n";
+        let result = parse(src).unwrap();
+
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "testNotificationRoles" && s.is_test)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "testParser" && s.is_test)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "helper" && !s.is_test)
+        );
     }
 
     #[test]

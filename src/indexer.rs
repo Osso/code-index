@@ -68,6 +68,10 @@ fn build_walker(path: &Path) -> Result<ignore::Walk> {
     types.select("rust");
     types.select("php");
     types.select("py");
+    types.add("js", "*.js")?;
+    types.add("jsx", "*.jsx")?;
+    types.select("js");
+    types.select("jsx");
     types.select("ts");
     types.add("qml", "*.qml")?;
     types.select("qml");

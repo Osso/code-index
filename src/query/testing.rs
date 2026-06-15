@@ -62,11 +62,74 @@ pub fn find_untested(
 ) -> Result<Vec<StoredSymbol>> {
     let reachable = build_test_reachable(db)?;
     let candidates = query_untested_candidates(db, path, exclude)?;
+    let qml_text_covered = build_qml_text_covered(db, &candidates)?;
     let untested = candidates
         .into_iter()
         .filter(|sym| !reachable.contains(&sym.name))
+        .filter(|sym| !qml_text_covered.contains(&symbol_key(sym)))
         .collect();
     Ok(untested)
+}
+
+fn symbol_key(symbol: &StoredSymbol) -> String {
+    format!("{}\0{}", symbol.file_path, symbol.name)
+}
+
+fn build_qml_text_covered(
+    db: &Database,
+    candidates: &[StoredSymbol],
+) -> Result<std::collections::HashSet<String>> {
+    let test_sources = read_test_sources(db)?;
+    if test_sources.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let mut covered = std::collections::HashSet::new();
+    for symbol in candidates {
+        if !symbol.file_path.ends_with(".qml") {
+            continue;
+        }
+        if test_sources.iter().any(|source| {
+            source.contains(&symbol.name) && qml_path_is_mentioned(source, &symbol.file_path)
+        }) {
+            covered.insert(symbol_key(symbol));
+        }
+    }
+
+    Ok(covered)
+}
+
+fn read_test_sources(db: &Database) -> Result<Vec<String>> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT f.path
+         FROM files f
+         JOIN symbols s ON s.file_id = f.id
+         WHERE s.is_test = 1",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+    let mut sources = Vec::new();
+    for row in rows {
+        let path = row?;
+        if let Ok(source) = std::fs::read_to_string(&path) {
+            sources.push(source.replace('\\', "/"));
+        }
+    }
+    Ok(sources)
+}
+
+fn qml_path_is_mentioned(test_source: &str, qml_path: &str) -> bool {
+    let normalized_path = qml_path.replace('\\', "/");
+    if test_source.contains(&normalized_path) {
+        return true;
+    }
+
+    normalized_path
+        .match_indices('/')
+        .map(|(index, _)| &normalized_path[index + 1..])
+        .filter(|suffix| suffix.contains('/'))
+        .any(|suffix| test_source.contains(suffix))
 }
 
 /// Build set of all symbol names reachable from test functions via call edges.
@@ -159,4 +222,106 @@ fn query_untested_candidates(
         .query_map(param_refs.as_slice(), map_stored_symbol)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(candidates)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use crate::model::{Symbol, SymbolKind};
+
+    use super::*;
+
+    fn insert_symbol(db: &Database, file_id: i64, name: &str, is_test: bool) {
+        db.insert_symbol(
+            file_id,
+            &Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Function,
+                line_start: 1,
+                line_end: 3,
+                parent_name: None,
+                visibility: None,
+                signature: None,
+                is_test,
+            },
+            None,
+        )
+        .unwrap();
+    }
+
+    fn temp_db() -> (TempDir, Database) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("code-index-test.db");
+        let db = Database::open(db_path.to_str().unwrap()).unwrap();
+        (tmp, db)
+    }
+
+    #[test]
+    fn qml_function_covered_when_test_mentions_file_and_symbol() {
+        let (_tmp, db) = temp_db();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let qml_path = tmp.path().join("Modules/Notification/Notification.qml");
+        let test_path = tmp.path().join("Tests/qml-type-annotations.test.js");
+        std::fs::create_dir_all(qml_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(test_path.parent().unwrap()).unwrap();
+        std::fs::write(&qml_path, "function notificationDisplayText() {}\n").unwrap();
+        std::fs::write(
+            &test_path,
+            "readQml(\"Modules/Notification/Notification.qml\"); notificationDisplayText",
+        )
+        .unwrap();
+        let qml_file = db
+            .upsert_file(qml_path.to_str().unwrap(), "qml-hash", "qml")
+            .unwrap();
+        let test_file = db
+            .upsert_file(test_path.to_str().unwrap(), "test-hash", "typescript")
+            .unwrap();
+
+        insert_symbol(&db, qml_file, "notificationDisplayText", false);
+        insert_symbol(&db, test_file, "testNotificationRoles", true);
+
+        let untested = find_untested(&db, None, &[]).unwrap();
+
+        assert!(
+            untested
+                .iter()
+                .all(|symbol| symbol.name != "notificationDisplayText"),
+            "QML symbol mentioned by a test for its file should be treated as tested"
+        );
+    }
+
+    #[test]
+    fn qml_function_remains_untested_when_test_only_mentions_file() {
+        let (_tmp, db) = temp_db();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let qml_path = tmp.path().join("Modules/Notification/Notification.qml");
+        let test_path = tmp.path().join("Tests/qml-type-annotations.test.js");
+        std::fs::create_dir_all(qml_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(test_path.parent().unwrap()).unwrap();
+        std::fs::write(&qml_path, "function notificationDisplayText() {}\n").unwrap();
+        std::fs::write(
+            &test_path,
+            "readQml(\"Modules/Notification/Notification.qml\"); unrelatedSymbol",
+        )
+        .unwrap();
+        let qml_file = db
+            .upsert_file(qml_path.to_str().unwrap(), "qml-hash", "qml")
+            .unwrap();
+        let test_file = db
+            .upsert_file(test_path.to_str().unwrap(), "test-hash", "typescript")
+            .unwrap();
+
+        insert_symbol(&db, qml_file, "notificationDisplayText", false);
+        insert_symbol(&db, test_file, "testNotificationRoles", true);
+
+        let untested = find_untested(&db, None, &[]).unwrap();
+
+        assert!(
+            untested
+                .iter()
+                .any(|symbol| symbol.name == "notificationDisplayText"),
+            "QML symbol must remain untested when no test mentions the symbol"
+        );
+    }
 }

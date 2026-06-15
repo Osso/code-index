@@ -15,7 +15,7 @@ impl Language {
             "php" => Some(Self::Php),
             "rs" => Some(Self::Rust),
             "py" => Some(Self::Python),
-            "ts" | "tsx" => Some(Self::TypeScript),
+            "js" | "jsx" | "ts" | "tsx" => Some(Self::TypeScript),
             "qml" => Some(Self::Qml),
             _ => None,
         }
