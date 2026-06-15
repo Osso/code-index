@@ -193,6 +193,7 @@ fn query_untested_candidates(
          JOIN files f ON s.file_id = f.id
          WHERE s.kind IN ('function', 'method')
          AND s.is_test = 0
+         AND NOT (f.lang = 'qml' AND s.name GLOB 'on[A-Z]*')
          AND s.name NOT IN ('main', 'new', '__init__', '__construct')",
     );
 
@@ -322,6 +323,26 @@ mod tests {
                 .iter()
                 .any(|symbol| symbol.name == "notificationDisplayText"),
             "QML symbol must remain untested when no test mentions the symbol"
+        );
+    }
+
+    #[test]
+    fn qml_signal_handlers_are_not_untested_function_candidates() {
+        let (_tmp, db) = temp_db();
+        let qml_file = db.upsert_file("Component.qml", "qml-hash", "qml").unwrap();
+
+        insert_symbol(&db, qml_file, "onCompleted", false);
+        insert_symbol(&db, qml_file, "loadData", false);
+
+        let untested = find_untested(&db, None, &[]).unwrap();
+
+        assert!(
+            untested.iter().all(|symbol| symbol.name != "onCompleted"),
+            "QML signal handlers should not be reported as untested callable functions"
+        );
+        assert!(
+            untested.iter().any(|symbol| symbol.name == "loadData"),
+            "Normal QML functions should still be reported when untested"
         );
     }
 }
