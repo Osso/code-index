@@ -114,4 +114,110 @@ Rectangle {
                 .any(|symbol| symbol.kind == SymbolKind::Function && symbol.name == "activate")
         );
     }
+
+    #[test]
+    fn parses_qml_inline_component_symbols() {
+        let parsed = parse(
+            r#"
+import QtQuick
+
+Item {
+  component Chip: Rectangle {
+    property string label: ""
+
+    function activate(reason) {
+      return reason
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            parsed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.kind == SymbolKind::Class && symbol.name == "Chip")
+        );
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Property
+                && symbol.name == "label"
+                && symbol.parent_name.as_deref() == Some("Chip")
+        }));
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Function
+                && symbol.name == "activate"
+                && symbol.parent_name.as_deref() == Some("Chip")
+        }));
+    }
+
+    #[test]
+    fn parses_qml_object_binding_child_symbols() {
+        let parsed = parse(
+            r#"
+import QtQuick
+
+Loader {
+  sourceComponent: Variants {
+    delegate: Item {
+      Connections {
+        target: root
+        function onReadyChanged() {}
+      }
+
+      function updateModel() {}
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            parsed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.kind == SymbolKind::Class && symbol.name == "Variants")
+        );
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Class
+                && symbol.name == "Item"
+                && symbol.parent_name.as_deref() == Some("Variants")
+        }));
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Function
+                && symbol.name == "updateModel"
+                && symbol.parent_name.as_deref() == Some("Item")
+        }));
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Function
+                && symbol.name == "onReadyChanged"
+                && symbol.parent_name.as_deref() == Some("Connections")
+        }));
+    }
+
+    #[test]
+    fn parses_qml_local_function_symbols() {
+        let parsed = parse(
+            r#"
+import QtQuick
+
+QtObject {
+  function openDialog() {
+    function instantiateAndOpen() {
+      return true
+    }
+
+    return instantiateAndOpen()
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(parsed.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Function && symbol.name == "instantiateAndOpen"
+        }));
+    }
 }
