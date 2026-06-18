@@ -81,6 +81,7 @@ impl Database {
         Ok(db)
     }
 
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
@@ -270,12 +271,6 @@ impl Database {
     /// Commit a transaction
     pub fn commit(&self) -> Result<()> {
         self.conn.execute_batch("COMMIT")?;
-        Ok(())
-    }
-
-    /// Rollback a transaction
-    pub fn rollback(&self) -> Result<()> {
-        self.conn.execute_batch("ROLLBACK")?;
         Ok(())
     }
 

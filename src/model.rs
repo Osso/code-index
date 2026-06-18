@@ -59,21 +59,6 @@ impl SymbolKind {
             Self::Event => "event",
         }
     }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "function" => Some(Self::Function),
-            "method" => Some(Self::Method),
-            "class" => Some(Self::Class),
-            "trait" => Some(Self::Trait),
-            "interface" => Some(Self::Interface),
-            "struct" => Some(Self::Struct),
-            "enum" => Some(Self::Enum),
-            "property" => Some(Self::Property),
-            "event" => Some(Self::Event),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -81,7 +66,6 @@ pub enum RefKind {
     Call,
     Inherit,
     Implement,
-    Import,
     TraitImpl,
 }
 
@@ -91,19 +75,7 @@ impl RefKind {
             Self::Call => "call",
             Self::Inherit => "inherit",
             Self::Implement => "implement",
-            Self::Import => "import",
             Self::TraitImpl => "trait_impl",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "call" => Some(Self::Call),
-            "inherit" => Some(Self::Inherit),
-            "implement" => Some(Self::Implement),
-            "import" => Some(Self::Import),
-            "trait_impl" => Some(Self::TraitImpl),
-            _ => None,
         }
     }
 }
@@ -147,16 +119,6 @@ pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub references: Vec<Reference>,
     pub imports: Vec<Import>,
-}
-
-/// A stored file record
-#[derive(Debug, Clone, Serialize)]
-pub struct FileInfo {
-    pub id: i64,
-    pub path: String,
-    pub hash: String,
-    pub lang: String,
-    pub indexed_at: i64,
 }
 
 /// A stored symbol with its database ID and file info
