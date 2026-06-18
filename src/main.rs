@@ -427,11 +427,46 @@ fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)
     Ok((project_dir, db))
 }
 
+/// How often a read query is allowed to re-scan the project for changes.
+/// Between checks, queries trust the existing index rather than re-walking the
+/// whole tree and re-resolving every reference (expensive on large repos).
+const REFRESH_INTERVAL_SECS: u64 = 3600;
+const LAST_REFRESH_KEY: &str = "last_refresh";
+
 fn refresh_project_index(db: &db::Database, project_dir: &Path) -> Result<()> {
+    let now = unix_now();
+    if !refresh_due(db, now)? {
+        return Ok(());
+    }
+
     let dir_str = project_dir.to_string_lossy();
-    indexer::index_directory(db, &dir_str, false)?;
-    resolver::resolve_references(db)?;
+    let stats = indexer::index_directory(db, &dir_str, false)?;
+    // Only the resolution pass is costly on large repos, and it is pointless
+    // when no file changed — the prior resolution is still valid.
+    if stats.changed_graph() {
+        resolver::resolve_references(db)?;
+    }
+
+    db.set_meta(LAST_REFRESH_KEY, &now.to_string())?;
     Ok(())
+}
+
+/// True when no freshness check has run within REFRESH_INTERVAL_SECS.
+fn refresh_due(db: &db::Database, now: u64) -> Result<bool> {
+    let last = db
+        .get_meta(LAST_REFRESH_KEY)?
+        .and_then(|v| v.parse::<u64>().ok());
+    Ok(match last {
+        Some(last) => now.saturating_sub(last) >= REFRESH_INTERVAL_SECS,
+        None => true,
+    })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn build_outline_file_args(
@@ -642,6 +677,50 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "indexed_symbol");
         assert!(tmp.path().join(".code-index.db").exists());
+    }
+
+    #[test]
+    fn refresh_due_when_never_refreshed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
+        assert!(refresh_due(&db, 10_000).unwrap());
+    }
+
+    #[test]
+    fn refresh_not_due_within_interval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
+        db.set_meta(LAST_REFRESH_KEY, "10000").unwrap();
+        assert!(!refresh_due(&db, 10_000 + REFRESH_INTERVAL_SECS - 1).unwrap());
+    }
+
+    #[test]
+    fn refresh_due_after_interval_elapses() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
+        db.set_meta(LAST_REFRESH_KEY, "10000").unwrap();
+        assert!(refresh_due(&db, 10_000 + REFRESH_INTERVAL_SECS).unwrap());
+    }
+
+    #[test]
+    fn open_refreshed_database_skips_rescan_within_interval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "fn first_symbol() {}\n").unwrap();
+
+        // First query indexes the tree and stamps the refresh timestamp.
+        let _ = open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        // A new file added within the interval must NOT be picked up: the
+        // freshness check is gated, so the index stays as-is until the hour
+        // elapses.
+        std::fs::write(tmp.path().join("more.rs"), "fn second_symbol() {}\n").unwrap();
+        let (_dir, db) = open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        let found = query::find_symbols(&db, "second_symbol", None, None).unwrap();
+        assert!(
+            found.is_empty(),
+            "file added within refresh interval should be ignored until the gate elapses"
+        );
     }
 }
 

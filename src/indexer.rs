@@ -22,7 +22,7 @@ pub fn index_directory(db: &Database, dir: &str, full: bool) -> Result<IndexStat
     if full {
         db.reset_index()?;
     } else {
-        prune_missing_files(db)?;
+        stats.pruned = prune_missing_files(db)?;
     }
 
     for entry in walker {
@@ -152,14 +152,23 @@ pub struct IndexStats {
     pub indexed: usize,
     pub skipped: usize,
     pub errors: usize,
+    pub pruned: usize,
+}
+
+impl IndexStats {
+    /// Whether this pass changed the symbol graph (re-indexed or removed files),
+    /// meaning reference resolution must be recomputed.
+    pub fn changed_graph(&self) -> bool {
+        self.indexed > 0 || self.pruned > 0
+    }
 }
 
 impl std::fmt::Display for IndexStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Indexed: {}, Skipped: {}, Errors: {}",
-            self.indexed, self.skipped, self.errors
+            "Indexed: {}, Skipped: {}, Pruned: {}, Errors: {}",
+            self.indexed, self.skipped, self.pruned, self.errors
         )
     }
 }

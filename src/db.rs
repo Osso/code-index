@@ -55,6 +55,11 @@ CREATE INDEX IF NOT EXISTS idx_refs_target_name ON refs(target_name);
 CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(kind);
 CREATE INDEX IF NOT EXISTS idx_imports_local_name ON imports(local_name);
 CREATE INDEX IF NOT EXISTS idx_imports_full_path ON imports(full_path);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 pub struct Database {
@@ -64,6 +69,11 @@ pub struct Database {
 impl Database {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open database")?;
+        // busy_timeout must be set before WAL/migration: concurrent writers (the
+        // watcher daemon plus a CLI invocation) otherwise fail instantly with
+        // "database is locked" instead of waiting for the lock to clear.
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .context("Failed to set busy_timeout")?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .context("Failed to set pragmas")?;
         let db = Self { conn };
@@ -266,6 +276,29 @@ impl Database {
     /// Rollback a transaction
     pub fn rollback(&self) -> Result<()> {
         self.conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
+    /// Read a value from the key/value meta table.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let value = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(value)
+    }
+
+    /// Write (insert or replace) a value in the key/value meta table.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
         Ok(())
     }
 }
