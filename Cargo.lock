@@ -163,6 +163,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-md",
  "tree-sitter-qmljs",
+ "tree-sitter-yaml",
 ]
 
 [[package]]
