@@ -687,4 +687,57 @@ mod tests {
         assert!(refs_from_tests.iter().any(|r| r.target_name == "render"));
         assert!(refs_from_tests.iter().any(|r| r.target_name == "Login"));
     }
+
+    #[test]
+    fn test_parse_ts_types_and_visibility() {
+        let src = r#"
+abstract class BaseService {
+    protected abstract run(): void;
 }
+
+interface Serializable {
+    serialize(): string;
+}
+
+enum Mode {
+    Fast,
+    Slow,
+}
+
+export class UserService extends BaseService implements Serializable {
+    private cache(): void {}
+    public serialize(): string { return "ok"; }
+}
+"#;
+        let result = parse(src).unwrap();
+
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "BaseService" && s.kind == SymbolKind::Class)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Serializable" && s.kind == SymbolKind::Interface)
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Mode" && s.kind == SymbolKind::Enum)
+        );
+        assert!(result.symbols.iter().any(|s| {
+            s.name == "cache"
+                && s.kind == SymbolKind::Method
+                && s.parent_name.as_deref() == Some("UserService")
+                && s.visibility.as_deref() == Some("private")
+        }));
+    }
+}
+
+#[cfg(test)]
+#[path = "typescript_extra_tests.rs"]
+mod extra_tests;
