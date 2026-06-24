@@ -56,9 +56,11 @@ pub fn resolve_db(explicit_path: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::CWD_LOCK;
 
     #[test]
     fn unindexed_cwd_resolves_to_cwd() {
+        let _guard = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
         let old_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -67,5 +69,40 @@ mod tests {
 
         std::env::set_current_dir(old_cwd).unwrap();
         assert_eq!(resolved, tmp.path());
+    }
+
+    #[test]
+    fn explicit_path_resolves_to_canonical_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let resolved = resolve_project_dir(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        assert_eq!(resolved, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn indexed_ancestor_wins_over_nested_cwd() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let nested = tmp.path().join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.path().join(DB_FILENAME), "").unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&nested).unwrap();
+
+        let resolved = resolve_project_dir(None).unwrap();
+
+        std::env::set_current_dir(old_cwd).unwrap();
+        assert_eq!(resolved, tmp.path());
+    }
+
+    #[test]
+    fn resolve_db_appends_index_filename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let resolved = resolve_db(Some(tmp.path().to_str().unwrap())).unwrap();
+
+        assert!(resolved.ends_with(".code-index.db"));
+        assert_eq!(resolved, db_path(tmp.path()));
     }
 }

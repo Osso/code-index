@@ -147,3 +147,53 @@ pub fn find_dead_code(
     rows.collect::<Result<Vec<_>, _>>()
         .context("Failed to query dead code")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SymbolKind;
+    use crate::query::test_support::{call_ref, file, symbol, test_db};
+
+    #[test]
+    fn find_symbols_filters_by_parent_kind_and_file() {
+        let db = test_db();
+        let service_file = file(&db, "/repo/src/service.rs");
+        let other_file = file(&db, "/repo/tests/service_test.rs");
+        let service = symbol(&db, service_file, "Service", SymbolKind::Struct, 3, None);
+        symbol(
+            &db,
+            service_file,
+            "run",
+            SymbolKind::Method,
+            7,
+            Some(service),
+        );
+        symbol(&db, other_file, "run", SymbolKind::Function, 4, None);
+
+        let matches = find_symbols(&db, "Service.run", Some("method"), Some("src")).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "run");
+        assert_eq!(matches[0].kind, "method");
+        assert_eq!(matches[0].file_path, "/repo/src/service.rs");
+    }
+
+    #[test]
+    fn list_symbols_and_dead_code_apply_filters_and_excludes() {
+        let db = test_db();
+        let file_id = file(&db, "/repo/src/lib.rs");
+        let used = symbol(&db, file_id, "used", SymbolKind::Function, 2, None);
+        let caller = symbol(&db, file_id, "caller", SymbolKind::Function, 8, None);
+        symbol(&db, file_id, "main", SymbolKind::Function, 20, None);
+        symbol(&db, file_id, "ignored", SymbolKind::Function, 30, None);
+        call_ref(&db, file_id, Some(caller), "used", None, 9);
+
+        let functions = list_symbols(&db, Some("function"), Some("src")).unwrap();
+        assert_eq!(functions.len(), 4);
+        assert!(functions.iter().any(|s| s.id == used));
+
+        let dead = find_dead_code(&db, Some("src"), &["ignored".to_string()]).unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].name, "caller");
+    }
+}

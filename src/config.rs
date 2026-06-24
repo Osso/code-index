@@ -82,3 +82,94 @@ pub fn find_project_for_path(dir: &Path) -> Result<Option<String>> {
 
     Ok(best_match.map(|(name, _)| name.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::CWD_LOCK;
+
+    fn with_temp_config_dir<T>(run: impl FnOnce(&Path) -> T) -> T {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: tests that mutate process-wide environment hold CWD_LOCK for
+        // the full mutation window, and other tests that read project config use
+        // the same lock.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        let result = run(tmp.path());
+        unsafe {
+            match old_config_home {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn load_returns_default_when_config_is_missing() {
+        with_temp_config_dir(|_| {
+            let config = load().unwrap();
+
+            assert!(config.projects.is_empty());
+        });
+    }
+
+    #[test]
+    fn save_and_load_round_trip_projects() {
+        with_temp_config_dir(|_| {
+            let mut config = Config::default();
+            config.projects.insert(
+                "demo".to_string(),
+                ProjectEntry {
+                    path: "/tmp/demo".to_string(),
+                },
+            );
+
+            save(&config).unwrap();
+            let loaded = load().unwrap();
+
+            assert_eq!(loaded.projects["demo"].path, "/tmp/demo");
+        });
+    }
+
+    #[test]
+    fn add_remove_and_find_project_use_canonical_paths() {
+        with_temp_config_dir(|_| {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let project = tmp.path().join("project");
+            let nested = project.join("src");
+            std::fs::create_dir_all(&nested).unwrap();
+
+            add_project("demo", &project).unwrap();
+            assert_eq!(
+                find_project_for_path(&nested).unwrap(),
+                Some("demo".to_string())
+            );
+            assert!(remove_project("demo").unwrap());
+            assert!(!remove_project("demo").unwrap());
+            assert_eq!(find_project_for_path(&nested).unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn find_project_for_path_prefers_longest_registered_prefix() {
+        with_temp_config_dir(|_| {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let parent = tmp.path().join("parent");
+            let child = parent.join("child");
+            let nested = child.join("src");
+            std::fs::create_dir_all(&nested).unwrap();
+
+            add_project("parent", &parent).unwrap();
+            add_project("child", &child).unwrap();
+
+            assert_eq!(
+                find_project_for_path(&nested).unwrap(),
+                Some("child".to_string())
+            );
+        });
+    }
+}

@@ -114,3 +114,65 @@ fn find_descendants(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{RefKind, SymbolKind};
+    use crate::query::test_support::{file, reference, symbol, test_db};
+
+    #[test]
+    fn find_hierarchy_walks_ancestors_and_descendants() {
+        let db = test_db();
+        let base_file = file(&db, "/repo/src/base.rs");
+        let mid_file = file(&db, "/repo/src/mid.rs");
+        let child_file = file(&db, "/repo/src/child.rs");
+        symbol(&db, base_file, "Base", SymbolKind::Struct, 1, None);
+        symbol(&db, mid_file, "Mid", SymbolKind::Struct, 1, None);
+        symbol(&db, child_file, "Child", SymbolKind::Struct, 1, None);
+        reference(&db, mid_file, None, RefKind::Inherit, "Base", None, 3);
+        reference(&db, child_file, None, RefKind::Inherit, "Mid", None, 3);
+
+        let ancestors = find_hierarchy(&db, "Child", "ancestors").unwrap();
+        assert_eq!(ancestors.len(), 2);
+        assert_eq!(ancestors[0].name, "Mid");
+        assert_eq!(ancestors[0].relation, "ancestor");
+        assert_eq!(ancestors[1].name, "Base");
+        assert_eq!(ancestors[1].depth, 1);
+
+        let descendants = find_hierarchy(&db, "Base", "descendants").unwrap();
+        assert_eq!(descendants.len(), 2);
+        assert_eq!(descendants[0].name, "Mid");
+        assert_eq!(descendants[1].name, "Child");
+        assert!(
+            descendants
+                .iter()
+                .all(|entry| entry.relation == "descendant")
+        );
+    }
+
+    #[test]
+    fn find_hierarchy_both_includes_implemented_traits() {
+        let db = test_db();
+        let trait_file = file(&db, "/repo/src/traits.rs");
+        let child_file = file(&db, "/repo/src/worker.rs");
+        symbol(&db, trait_file, "Runnable", SymbolKind::Trait, 1, None);
+        symbol(&db, child_file, "Worker", SymbolKind::Struct, 1, None);
+        reference(
+            &db,
+            child_file,
+            None,
+            RefKind::Implement,
+            "Runnable",
+            None,
+            4,
+        );
+
+        let entries = find_hierarchy(&db, "Runnable", "both").unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Worker");
+        assert_eq!(entries[0].kind, "implement");
+        assert_eq!(entries[0].file_path, "/repo/src/worker.rs");
+    }
+}

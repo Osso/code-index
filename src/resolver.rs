@@ -261,6 +261,32 @@ mod tests {
         db.insert_symbol(file_id, &symbol, parent_id)
     }
 
+    fn insert_call_ref(
+        db: &Database,
+        file_id: i64,
+        target_name: &str,
+        target_qualifier: Option<&str>,
+    ) -> i64 {
+        let reference = Reference {
+            kind: RefKind::Call,
+            target_name: target_name.to_string(),
+            target_qualifier: target_qualifier.map(str::to_string),
+            line: 12,
+            source_symbol_name: None,
+        };
+        db.insert_ref(file_id, &reference, None).unwrap()
+    }
+
+    fn resolved_target_id(db: &Database, ref_id: i64) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT target_symbol_id FROM refs WHERE id = ?1",
+                [ref_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn resolve_references_uses_target_qualifier_for_module_calls() {
         let db = Database::open_in_memory().unwrap();
@@ -363,5 +389,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(resolved_target, leash_method_id);
+    }
+
+    #[test]
+    fn resolve_references_prefers_same_file_candidate() {
+        let db = Database::open_in_memory().unwrap();
+        let source_file_id = db.upsert_file("/repo/src/local.rs", "src", "rust").unwrap();
+        let other_file_id = db
+            .upsert_file("/repo/src/other/local.rs", "other", "rust")
+            .unwrap();
+        let local_id = insert_symbol(&db, source_file_id, "helper", None).unwrap();
+        insert_symbol(&db, other_file_id, "helper", None).unwrap();
+        let ref_id = insert_call_ref(&db, source_file_id, "helper", None);
+
+        let result = resolve_references(&db).unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.resolved, 1);
+        assert_eq!(result.ambiguous, 0);
+        assert_eq!(resolved_target_id(&db, ref_id), local_id);
+    }
+
+    #[test]
+    fn resolve_references_counts_ambiguous_matches() {
+        let db = Database::open_in_memory().unwrap();
+        let source_file_id = db
+            .upsert_file("/repo/src/source.rs", "src", "rust")
+            .unwrap();
+        let first_file_id = db.upsert_file("/repo/src/a.rs", "a", "rust").unwrap();
+        let second_file_id = db.upsert_file("/repo/src/b.rs", "b", "rust").unwrap();
+        insert_symbol(&db, first_file_id, "dupe", None).unwrap();
+        insert_symbol(&db, second_file_id, "dupe", None).unwrap();
+        insert_call_ref(&db, source_file_id, "dupe", None);
+
+        let result = resolve_references(&db).unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.resolved, 0);
+        assert_eq!(result.ambiguous, 1);
+        assert_eq!(
+            result.to_string(),
+            "Resolution: 0/1 resolved, 1 ambiguous, 0 unresolved"
+        );
+    }
+
+    #[test]
+    fn resolve_references_uses_import_when_target_name_is_alias() {
+        let db = Database::open_in_memory().unwrap();
+        let source_file_id = db
+            .upsert_file("/repo/src/source.rs", "src", "rust")
+            .unwrap();
+        let widget_file_id = db
+            .upsert_file("/repo/src/widgets/widget.rs", "widget", "rust")
+            .unwrap();
+        let widget_id = insert_symbol(&db, widget_file_id, "Widget", None).unwrap();
+        db.insert_import(
+            source_file_id,
+            &crate::model::Import {
+                local_name: "LocalWidget".to_string(),
+                full_path: "crate::widgets::Widget".to_string(),
+                alias: Some("LocalWidget".to_string()),
+                line: 4,
+            },
+        )
+        .unwrap();
+        let ref_id = insert_call_ref(&db, source_file_id, "LocalWidget", None);
+
+        let result = resolve_references(&db).unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.resolved, 1);
+        assert_eq!(result.ambiguous, 0);
+        assert_eq!(resolved_target_id(&db, ref_id), widget_id);
     }
 }

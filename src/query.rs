@@ -4,6 +4,8 @@ mod hierarchy;
 mod imports;
 mod references;
 mod symbols;
+#[cfg(test)]
+mod test_support;
 mod testing;
 
 pub use calls::{find_callees, find_callers};

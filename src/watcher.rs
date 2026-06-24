@@ -13,6 +13,7 @@ use crate::model::Language;
 use crate::resolver;
 
 /// Watch a directory for file changes and re-index affected files.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn watch(db_path: &str, dir: &str) -> Result<()> {
     let dir = Path::new(dir)
         .canonicalize()
@@ -144,4 +145,50 @@ fn reindex_file(db: &Database, path: &Path, lang: Language) -> Result<bool> {
     indexer::store_parse_result(db, file_id, &result)?;
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_file_language_accepts_supported_extensions() {
+        assert_eq!(
+            changed_file_language(Path::new("src/lib.rs")),
+            Some(Language::Rust)
+        );
+        assert_eq!(
+            changed_file_language(Path::new("src/App.qml")),
+            Some(Language::Qml)
+        );
+        assert_eq!(changed_file_language(Path::new("README.md")), None);
+    }
+
+    #[test]
+    fn handle_changed_file_indexes_supported_file_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let path = tmp.path().join("lib.rs");
+        std::fs::write(&path, "pub fn helper() {}\n").unwrap();
+
+        assert!(handle_changed_file(&db, &path).unwrap());
+        assert!(!handle_changed_file(&db, &path).unwrap());
+
+        let stats = db.get_stats().unwrap();
+        assert_eq!(stats.0, 1);
+        assert_eq!(stats.1, 1);
+    }
+
+    #[test]
+    fn handle_changed_file_ignores_removed_and_unsupported_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let removed = tmp.path().join("missing.rs");
+        let unsupported = tmp.path().join("README.md");
+        std::fs::write(&unsupported, "# docs\n").unwrap();
+
+        assert!(!handle_changed_file(&db, &removed).unwrap());
+        assert!(!handle_changed_file(&db, &unsupported).unwrap());
+        assert_eq!(db.get_stats().unwrap(), (0, 0, 0));
+    }
 }

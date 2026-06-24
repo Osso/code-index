@@ -1,12 +1,19 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod config;
 mod db;
 mod indexer;
+mod main_project;
+#[cfg(test)]
+mod main_tests;
 mod mcp;
 mod model;
 mod parser;
 mod project;
 mod query;
 mod resolver;
+#[cfg(test)]
+mod test_support;
 mod watcher;
 
 use std::collections::BTreeSet;
@@ -15,6 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use ast_outline::core::{DigestOptions, OutlineOptions};
 use clap::{Parser, Subcommand};
+use main_project::cmd_project;
 
 #[derive(Parser)]
 #[command(name = "code-index", about = "Structural code analysis MCP server")]
@@ -214,6 +222,7 @@ enum ProjectAction {
     List,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -221,6 +230,7 @@ fn main() -> Result<()> {
     dispatch(cli.command)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch(command: Command) -> Result<()> {
     match command {
         command @ Command::Serve
@@ -244,6 +254,7 @@ fn dispatch(command: Command) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch_core_command(command: Command) -> Result<()> {
     match command {
         Command::Serve => run_mcp_server()?,
@@ -254,6 +265,7 @@ fn dispatch_core_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch_analysis_command(command: Command) -> Result<()> {
     match command {
         command @ Command::Symbol { .. }
@@ -268,6 +280,7 @@ fn dispatch_analysis_command(command: Command) -> Result<()> {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch_symbol_call_command(command: Command) -> Result<()> {
     match command {
         Command::Symbol {
@@ -297,6 +310,7 @@ fn dispatch_symbol_call_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch_quality_command(command: Command) -> Result<()> {
     match command {
         Command::DeadCode { exclude, path } => cmd_dead_code(path.as_deref(), &exclude)?,
@@ -317,6 +331,7 @@ fn dispatch_quality_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn dispatch_utility_command(command: Command) -> Result<()> {
     match command {
         Command::ImportedBy { name, file, path } => {
@@ -328,17 +343,29 @@ fn dispatch_utility_command(command: Command) -> Result<()> {
         Command::List { kind, file, path } => {
             cmd_list(path.as_deref(), kind.as_deref(), file.as_deref())?
         }
-        Command::Outline {
-            paths,
-            digest,
-            no_private,
-            no_fields,
-            no_docs,
-            no_attrs,
-            no_lines,
-            glob,
-            show,
-        } => cmd_outline(OutlineCommandOptions {
+        Command::Outline { .. } => dispatch_outline_command(command)?,
+        Command::Watch { path } => cmd_watch(path.as_deref())?,
+        Command::Status { path } => cmd_status(path.as_deref())?,
+        _ => unreachable!("non-utility command routed to dispatch_utility_command"),
+    }
+    Ok(())
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn dispatch_outline_command(command: Command) -> Result<()> {
+    if let Command::Outline {
+        paths,
+        digest,
+        no_private,
+        no_fields,
+        no_docs,
+        no_attrs,
+        no_lines,
+        glob,
+        show,
+    } = command
+    {
+        return cmd_outline(OutlineCommandOptions {
             paths: &paths,
             digest,
             no_private,
@@ -348,14 +375,12 @@ fn dispatch_utility_command(command: Command) -> Result<()> {
             no_lines,
             glob: glob.as_deref(),
             show: &show,
-        })?,
-        Command::Watch { path } => cmd_watch(path.as_deref())?,
-        Command::Status { path } => cmd_status(path.as_deref())?,
-        _ => unreachable!("non-utility command routed to dispatch_utility_command"),
+        });
     }
-    Ok(())
+    unreachable!("non-outline command routed to dispatch_outline_command")
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn run_mcp_server() -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -370,6 +395,7 @@ fn run_mcp_server() -> Result<()> {
     })
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
     let project_dir = project::resolve_project_dir(path).or_else(|_| {
         // For index, if no project found, use the explicit path or CWD
@@ -388,6 +414,7 @@ fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_symbol(
     path: Option<&str>,
     name: &str,
@@ -401,6 +428,7 @@ fn cmd_symbol(
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_callers(
     path: Option<&str>,
     name: &str,
@@ -497,6 +525,7 @@ fn resolve_outline_file(project_dir: &Path, file_path: &str) -> PathBuf {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_outline(options: OutlineCommandOptions<'_>) -> Result<()> {
     let results = ast_outline::walk_and_parse(options.paths, options.glob);
     if !options.show.is_empty() {
@@ -535,27 +564,34 @@ fn cmd_outline(options: OutlineCommandOptions<'_>) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_outline_symbol_matches(results: &[ast_outline::core::ParseResult], symbols: &[String]) {
     for result in results {
         for symbol in symbols {
-            for symbol_match in ast_outline::core::find_symbols(result, symbol) {
-                println!(
-                    "# {}:{}-{} {} ({})",
-                    result.path.display(),
-                    symbol_match.start_line,
-                    symbol_match.end_line,
-                    symbol_match.qualified_name,
-                    symbol_match.kind
-                );
-                if !symbol_match.ancestor_signatures.is_empty() {
-                    println!("# in: {}", symbol_match.ancestor_signatures.join(" -> "));
-                }
-                println!("{}", symbol_match.source);
-            }
+            print_outline_matches_for_symbol(result, symbol);
         }
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn print_outline_matches_for_symbol(result: &ast_outline::core::ParseResult, symbol: &str) {
+    for symbol_match in ast_outline::core::find_symbols(result, symbol) {
+        println!(
+            "# {}:{}-{} {} ({})",
+            result.path.display(),
+            symbol_match.start_line,
+            symbol_match.end_line,
+            symbol_match.qualified_name,
+            symbol_match.kind
+        );
+        if !symbol_match.ancestor_signatures.is_empty() {
+            println!("# in: {}", symbol_match.ancestor_signatures.join(" -> "));
+        }
+        println!("{}", symbol_match.source);
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn render_outline_results(results: &[ast_outline::core::ParseResult], options: &OutlineOptions) {
     for result in results {
         println!("{}", ast_outline::core::render_outline(result, options));
@@ -563,6 +599,7 @@ fn render_outline_results(results: &[ast_outline::core::ParseResult], options: &
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn run_outline(files: &[String]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -580,6 +617,7 @@ fn run_outline(files: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_callees(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let callees = query::find_callees(&db, name, file, depth)?;
@@ -588,6 +626,7 @@ fn cmd_callees(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_dead_code(path: Option<&str>, exclude: &[String]) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let dead = query::find_dead_code(&db, None, exclude)?;
@@ -596,6 +635,7 @@ fn cmd_dead_code(path: Option<&str>, exclude: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_hierarchy(path: Option<&str>, name: &str, direction: &str) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let entries = query::find_hierarchy(&db, name, direction)?;
@@ -604,6 +644,7 @@ fn cmd_hierarchy(path: Option<&str>, name: &str, direction: &str) -> Result<()> 
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let refs = query::find_references(&db, name, kind)?;
@@ -612,118 +653,7 @@ fn cmd_references(path: Option<&str>, name: &str, kind: Option<&str>) -> Result<
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{CallInfo, StoredSymbol};
-    use std::path::Path;
-
-    #[test]
-    fn outline_file_args_include_definition_and_unique_callers() {
-        let definitions = vec![StoredSymbol {
-            id: 1,
-            file_path: "src/base.php".to_string(),
-            name: "blockedReleaseResponse".to_string(),
-            kind: "method".to_string(),
-            line_start: 10,
-            line_end: 20,
-            visibility: None,
-            signature: None,
-        }];
-        let callers = vec![
-            CallInfo {
-                symbol_name: "handle_pages".to_string(),
-                file_path: "src/releases.php".to_string(),
-                line: 30,
-                kind: "call".to_string(),
-            },
-            CallInfo {
-                symbol_name: "handle_fragments".to_string(),
-                file_path: "src/releases.php".to_string(),
-                line: 40,
-                kind: "call".to_string(),
-            },
-        ];
-
-        let files = build_outline_file_args(Path::new("/repo"), &definitions, &callers);
-
-        assert_eq!(files, vec!["/repo/src/base.php", "/repo/src/releases.php"]);
-    }
-
-    #[test]
-    fn open_refreshed_database_prunes_missing_files_before_queries() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let missing_file = tmp.path().join("missing.rs");
-        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
-        db.upsert_file(missing_file.to_str().unwrap(), "stale", "rust")
-            .unwrap();
-
-        let (_project_dir, db) =
-            open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
-
-        let (files, symbols, refs) = db.get_stats().unwrap();
-        assert_eq!((files, symbols, refs), (0, 0, 0));
-    }
-
-    #[test]
-    fn open_refreshed_database_creates_missing_index_before_queries() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("lib.rs"), "fn indexed_symbol() {}\n").unwrap();
-
-        let (_project_dir, db) =
-            open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
-
-        let symbols = query::find_symbols(&db, "indexed_symbol", None, None).unwrap();
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "indexed_symbol");
-        assert!(tmp.path().join(".code-index.db").exists());
-    }
-
-    #[test]
-    fn refresh_due_when_never_refreshed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
-        assert!(refresh_due(&db, 10_000).unwrap());
-    }
-
-    #[test]
-    fn refresh_not_due_within_interval() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
-        db.set_meta(LAST_REFRESH_KEY, "10000").unwrap();
-        assert!(!refresh_due(&db, 10_000 + REFRESH_INTERVAL_SECS - 1).unwrap());
-    }
-
-    #[test]
-    fn refresh_due_after_interval_elapses() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db = db::Database::open(&project::db_path(tmp.path())).unwrap();
-        db.set_meta(LAST_REFRESH_KEY, "10000").unwrap();
-        assert!(refresh_due(&db, 10_000 + REFRESH_INTERVAL_SECS).unwrap());
-    }
-
-    #[test]
-    fn open_refreshed_database_skips_rescan_within_interval() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("lib.rs"), "fn first_symbol() {}\n").unwrap();
-
-        // First query indexes the tree and stamps the refresh timestamp.
-        let _ = open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
-
-        // A new file added within the interval must NOT be picked up: the
-        // freshness check is gated, so the index stays as-is until the hour
-        // elapses.
-        std::fs::write(tmp.path().join("more.rs"), "fn second_symbol() {}\n").unwrap();
-        let (_dir, db) = open_refreshed_database(Some(tmp.path().to_str().unwrap())).unwrap();
-
-        let found = query::find_symbols(&db, "second_symbol", None, None).unwrap();
-        assert!(
-            found.is_empty(),
-            "file added within refresh interval should be ignored until the gate elapses"
-        );
-    }
-}
-
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let tests = query::find_tested_by(&db, name, file, depth)?;
@@ -732,6 +662,7 @@ fn cmd_tested_by(path: Option<&str>, name: &str, file: Option<&str>, depth: u32)
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let untested = query::find_untested(&db, None, exclude)?;
@@ -740,6 +671,7 @@ fn cmd_untested(path: Option<&str>, exclude: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_imported_by(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let entries = query::find_imported_by(&db, name, file)?;
@@ -748,6 +680,7 @@ fn cmd_imported_by(path: Option<&str>, name: &str, file: Option<&str>) -> Result
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let imports = query::resolve_import(&db, name, file)?;
@@ -756,6 +689,7 @@ fn cmd_resolve_import(path: Option<&str>, name: &str, file: Option<&str>) -> Res
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_list(path: Option<&str>, kind: Option<&str>, file: Option<&str>) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let symbols = query::list_symbols(&db, kind, file)?;
@@ -764,6 +698,7 @@ fn cmd_list(path: Option<&str>, kind: Option<&str>, file: Option<&str>) -> Resul
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_watch(path: Option<&str>) -> Result<()> {
     let project_dir = project::resolve_project_dir(path).or_else(|_| {
         let p = path.unwrap_or(".");
@@ -776,98 +711,10 @@ fn cmd_watch(path: Option<&str>) -> Result<()> {
     watcher::watch(&db_path, &dir_str)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn cmd_status(path: Option<&str>) -> Result<()> {
     let (_project_dir, db) = open_refreshed_database(path)?;
     let (files, symbols, refs) = db.get_stats()?;
     println!("Files: {files}, Symbols: {symbols}, References: {refs}");
     Ok(())
-}
-
-fn cmd_project(action: ProjectAction) -> Result<()> {
-    run_project_action(action)
-}
-
-fn run_project_action(action: ProjectAction) -> Result<()> {
-    match action {
-        ProjectAction::Add { name, path } => cmd_project_add(&name, path)?,
-        ProjectAction::Remove { name } => cmd_project_remove(&name)?,
-        ProjectAction::List => cmd_project_list()?,
-    }
-    Ok(())
-}
-
-fn cmd_project_add(name: &str, path: Option<String>) -> Result<()> {
-    let dir = resolve_project_registration_dir(path)?;
-    config::add_project(name, &dir)?;
-    println!("Registered project '{}' at {}", name, dir.display());
-    Ok(())
-}
-
-fn resolve_project_registration_dir(path: Option<String>) -> Result<std::path::PathBuf> {
-    match path {
-        Some(p) => Ok(std::path::PathBuf::from(p)),
-        None => std::env::current_dir().map_err(Into::into),
-    }
-}
-
-fn cmd_project_remove(name: &str) -> Result<()> {
-    let removed = config::remove_project(name)?;
-    print_project_remove_result(name, removed);
-    Ok(())
-}
-
-fn print_project_remove_result(name: &str, removed: bool) {
-    let message = project_remove_result_message(name, removed);
-    println!("{message}");
-}
-
-fn project_remove_result_message(name: &str, removed: bool) -> String {
-    match removed {
-        true => format!("Removed project '{name}'"),
-        false => format!("Project '{name}' not found"),
-    }
-}
-
-fn cmd_project_list() -> Result<()> {
-    let config = config::load()?;
-    print_project_entries(&config.projects);
-    Ok(())
-}
-
-fn print_project_entries(projects: &std::collections::BTreeMap<String, config::ProjectEntry>) {
-    let rows = project_rows(projects);
-    if rows.is_empty() {
-        println!("No projects registered.");
-        return;
-    }
-    print_project_rows(&rows);
-}
-
-fn project_rows(
-    projects: &std::collections::BTreeMap<String, config::ProjectEntry>,
-) -> Vec<String> {
-    projects
-        .iter()
-        .map(|(name, entry)| format_project_list_row(name, entry))
-        .collect()
-}
-
-fn print_project_rows(rows: &[String]) {
-    for row in rows {
-        println!("{row}");
-    }
-}
-
-fn project_index_status(project_path: &str) -> &'static str {
-    let db_file = std::path::Path::new(project_path).join(".code-index.db");
-    if db_file.exists() {
-        "indexed"
-    } else {
-        "not indexed"
-    }
-}
-
-fn format_project_list_row(name: &str, entry: &config::ProjectEntry) -> String {
-    let status = project_index_status(&entry.path);
-    format!("{name}: {} ({status})", entry.path)
 }

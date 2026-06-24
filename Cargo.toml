@@ -33,3 +33,6 @@ tempfile = "3"
 [profile.release]
 strip = true
 lto = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }

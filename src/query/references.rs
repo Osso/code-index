@@ -114,3 +114,60 @@ fn map_stored_reference(row: &rusqlite::Row) -> rusqlite::Result<StoredReference
         target_symbol: row.get(8)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SymbolKind;
+    use crate::query::test_support::{call_ref, file, symbol, test_db};
+
+    #[test]
+    fn find_references_filters_qualified_calls_and_maps_resolution() {
+        let db = test_db();
+        let service_file = file(&db, "/repo/src/service.rs");
+        let caller_file = file(&db, "/repo/src/controller.rs");
+        let service = symbol(&db, service_file, "Service", SymbolKind::Struct, 2, None);
+        let run = symbol(
+            &db,
+            service_file,
+            "run",
+            SymbolKind::Method,
+            4,
+            Some(service),
+        );
+        let controller = symbol(&db, caller_file, "handle", SymbolKind::Function, 10, None);
+        let ref_id = call_ref(
+            &db,
+            caller_file,
+            Some(controller),
+            "run",
+            Some("Service"),
+            12,
+        );
+        call_ref(&db, caller_file, Some(controller), "run", None, 14);
+        db.resolve_ref(ref_id, run).unwrap();
+
+        let refs = find_references(&db, "Service.run", Some("call")).unwrap();
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].source_file, "/repo/src/controller.rs");
+        assert_eq!(refs[0].source_symbol.as_deref(), Some("handle"));
+        assert_eq!(refs[0].target_file.as_deref(), Some("/repo/src/service.rs"));
+        assert_eq!(refs[0].target_symbol.as_deref(), Some("run"));
+        assert!(refs[0].resolved);
+    }
+
+    #[test]
+    fn find_references_without_kind_returns_unresolved_matches() {
+        let db = test_db();
+        let file_id = file(&db, "/repo/src/free.rs");
+        call_ref(&db, file_id, None, "free_fn", None, 3);
+
+        let refs = find_references(&db, "free_fn", None).unwrap();
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].source_symbol, None);
+        assert_eq!(refs[0].target_name, "free_fn");
+        assert!(!refs[0].resolved);
+    }
+}

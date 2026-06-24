@@ -348,3 +348,68 @@ fn map_callee_info(row: &rusqlite::Row) -> rusqlite::Result<CallInfo> {
         kind: row.get(3)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SymbolKind;
+    use crate::query::test_support::{call_ref, file, symbol, test_db};
+
+    #[test]
+    fn find_callers_follows_name_and_resolved_file_paths() {
+        let db = test_db();
+        let target_file = file(&db, "/repo/src/target.rs");
+        let caller_file = file(&db, "/repo/src/caller.rs");
+        let target = symbol(&db, target_file, "target", SymbolKind::Function, 2, None);
+        let caller = symbol(&db, caller_file, "caller", SymbolKind::Function, 8, None);
+        let grand_caller = symbol(
+            &db,
+            caller_file,
+            "grand_caller",
+            SymbolKind::Function,
+            20,
+            None,
+        );
+        let target_ref = call_ref(&db, caller_file, Some(caller), "target", None, 9);
+        call_ref(&db, caller_file, Some(grand_caller), "caller", None, 21);
+        db.resolve_ref(target_ref, target).unwrap();
+
+        let recursive = find_callers(&db, "target", None, 2).unwrap();
+        let names: Vec<_> = recursive
+            .iter()
+            .map(|call| call.symbol_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["caller", "grand_caller"]);
+
+        let by_file = find_callers(&db, "target", Some("target.rs"), 1).unwrap();
+        assert_eq!(by_file.len(), 1);
+        assert_eq!(by_file[0].symbol_name, "caller");
+        assert_eq!(by_file[0].file_path, "/repo/src/caller.rs");
+    }
+
+    #[test]
+    fn find_callees_filters_qualified_symbol_and_file() {
+        let db = test_db();
+        let file_id = file(&db, "/repo/src/service.rs");
+        let service = symbol(&db, file_id, "Service", SymbolKind::Struct, 2, None);
+        let run = symbol(&db, file_id, "run", SymbolKind::Method, 5, Some(service));
+        let target = symbol(&db, file_id, "target", SymbolKind::Function, 12, None);
+        symbol(&db, file_id, "leaf", SymbolKind::Function, 30, None);
+        call_ref(&db, file_id, Some(run), "target", None, 6);
+        call_ref(&db, file_id, Some(target), "leaf", None, 13);
+
+        let callees = find_callees(&db, "Service.run", Some("service.rs"), 2).unwrap();
+        let names: Vec<_> = callees
+            .iter()
+            .map(|call| call.symbol_name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["target", "leaf"]);
+        assert!(callees.iter().all(|call| call.kind == "call"));
+        assert!(
+            callees
+                .iter()
+                .all(|call| call.file_path == "/repo/src/service.rs")
+        );
+    }
+}

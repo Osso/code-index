@@ -184,3 +184,64 @@ fn map_imported_by(row: &rusqlite::Row) -> rusqlite::Result<ImportedByEntry> {
         line: row.get(4)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SymbolKind;
+    use crate::query::test_support::{file, import, symbol, test_db};
+
+    #[test]
+    fn resolve_import_maps_alias_to_best_symbol_candidate() {
+        let db = test_db();
+        let source_file = file(&db, "/repo/src/app.rs");
+        let target_file = file(&db, "/repo/src/service.rs");
+        let other_file = file(&db, "/repo/vendor/service.rs");
+        symbol(&db, target_file, "Service", SymbolKind::Struct, 1, None);
+        symbol(&db, other_file, "Service", SymbolKind::Struct, 1, None);
+        import(
+            &db,
+            source_file,
+            "LocalService",
+            "src::service::Service",
+            Some("LocalService"),
+            5,
+        );
+
+        let resolved = resolve_import(&db, "LocalService", Some("app.rs")).unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].source_file, "/repo/src/app.rs");
+        assert_eq!(resolved[0].alias.as_deref(), Some("LocalService"));
+        assert_eq!(
+            resolved[0].target_file.as_deref(),
+            Some("/repo/src/service.rs")
+        );
+        assert_eq!(resolved[0].target_symbol.as_deref(), Some("Service"));
+        assert_eq!(resolved[0].target_kind.as_deref(), Some("struct"));
+    }
+
+    #[test]
+    fn resolve_import_falls_back_to_local_name_and_imported_by_filters_file() {
+        let db = test_db();
+        let source_file = file(&db, "/repo/src/consumer.rs");
+        let test_file = file(&db, "/repo/tests/consumer_test.rs");
+        let target_file = file(&db, "/repo/src/widget.rs");
+        symbol(&db, target_file, "Widget", SymbolKind::Struct, 1, None);
+        import(&db, source_file, "Widget", "crate::renamed", None, 4);
+        import(&db, test_file, "Widget", "crate::renamed", None, 6);
+
+        let resolved = resolve_import(&db, "renamed", None).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert!(
+            resolved
+                .iter()
+                .all(|entry| entry.target_symbol.as_deref() == Some("Widget"))
+        );
+
+        let imported_by = find_imported_by(&db, "renamed", Some("tests")).unwrap();
+        assert_eq!(imported_by.len(), 1);
+        assert_eq!(imported_by[0].file_path, "/repo/tests/consumer_test.rs");
+        assert_eq!(imported_by[0].local_name, "Widget");
+    }
+}
