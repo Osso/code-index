@@ -18,7 +18,8 @@ jobs:
 
       - name: Checkout path dependencies
         run: |
-          mkdir -p /home/osso/Repos
+          sudo mkdir -p /home/osso/Repos
+          sudo chown -R $USER:$USER /home/osso
           git clone --depth 1 https://github.com/Osso/ast-outline /home/osso/Repos/ast-outline
 
       - uses: dtolnay/rust-toolchain@stable
