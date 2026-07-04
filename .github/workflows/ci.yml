@@ -16,6 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout path dependencies
+        run: |
+          mkdir -p /home/osso/Repos
+          git clone --depth 1 https://github.com/Osso/ast-outline /home/osso/Repos/ast-outline
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
