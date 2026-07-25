@@ -136,6 +136,7 @@ impl Database {
     }
 
     /// Insert or update a file record. Returns the file ID.
+    #[cfg(test)]
     pub fn upsert_file(&self, path: &str, hash: &str, lang: &str) -> Result<i64> {
         self.upsert_file_with_metadata(path, hash, lang, None, None)
     }
