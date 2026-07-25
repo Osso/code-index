@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT NOT NULL UNIQUE,
     hash TEXT NOT NULL,
     lang TEXT NOT NULL,
-    indexed_at INTEGER NOT NULL
+    indexed_at INTEGER NOT NULL,
+    size INTEGER,
+    modified_ns INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -66,6 +68,12 @@ pub struct Database {
     conn: Connection,
 }
 
+pub struct FileState {
+    pub hash: String,
+    pub size: Option<i64>,
+    pub modified_ns: Option<i64>,
+}
+
 impl Database {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open database")?;
@@ -95,10 +103,31 @@ impl Database {
         self.conn
             .execute_batch(SCHEMA)
             .context("Failed to run migrations")?;
-        // Add is_test column if missing (existing DBs)
-        let _ = self
-            .conn
-            .execute_batch("ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0");
+        self.add_column_if_missing(
+            "symbols",
+            "is_test",
+            "ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.add_column_if_missing("files", "size", "ALTER TABLE files ADD COLUMN size INTEGER")?;
+        self.add_column_if_missing(
+            "files",
+            "modified_ns",
+            "ALTER TABLE files ADD COLUMN modified_ns INTEGER",
+        )?;
+        Ok(())
+    }
+
+    fn add_column_if_missing(&self, table: &str, column: &str, statement: &str) -> Result<()> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+            params![table, column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            self.conn
+                .execute_batch(statement)
+                .with_context(|| format!("Failed to add {table}.{column}"))?;
+        }
         Ok(())
     }
 
@@ -108,16 +137,28 @@ impl Database {
 
     /// Insert or update a file record. Returns the file ID.
     pub fn upsert_file(&self, path: &str, hash: &str, lang: &str) -> Result<i64> {
+        self.upsert_file_with_metadata(path, hash, lang, None, None)
+    }
+
+    pub fn upsert_file_with_metadata(
+        &self,
+        path: &str,
+        hash: &str,
+        lang: &str,
+        size: Option<i64>,
+        modified_ns: Option<i64>,
+    ) -> Result<i64> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
 
         self.conn.execute(
-            "INSERT INTO files (path, hash, lang, indexed_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(path) DO UPDATE SET hash=?2, lang=?3, indexed_at=?4",
-            params![path, hash, lang, now],
+            "INSERT INTO files (path, hash, lang, indexed_at, size, modified_ns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET
+                 hash=?2, lang=?3, indexed_at=?4, size=?5, modified_ns=?6",
+            params![path, hash, lang, now, size, modified_ns],
         )?;
 
         // Do not use last_insert_rowid() here: on ON CONFLICT DO UPDATE it may retain
@@ -130,15 +171,25 @@ impl Database {
         Ok(id)
     }
 
-    /// Get file hash to check if re-indexing is needed
-    pub fn get_file_hash(&self, path: &str) -> Result<Option<String>> {
+    pub fn query_file_state(&self, path: &str) -> Result<Option<FileState>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT hash FROM files WHERE path = ?1")?;
+            .prepare("SELECT hash, size, modified_ns FROM files WHERE path = ?1")?;
         let result = stmt
-            .query_row(params![path], |row| row.get::<_, String>(0))
+            .query_row(params![path], |row| {
+                Ok(FileState {
+                    hash: row.get(0)?,
+                    size: row.get(1)?,
+                    modified_ns: row.get(2)?,
+                })
+            })
             .ok();
         Ok(result)
+    }
+
+    /// Get file hash to check if re-indexing is needed.
+    pub fn get_file_hash(&self, path: &str) -> Result<Option<String>> {
+        Ok(self.query_file_state(path)?.map(|state| state.hash))
     }
 
     pub fn list_file_paths(&self) -> Result<Vec<String>> {

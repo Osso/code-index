@@ -93,25 +93,56 @@ fn prune_missing_files(db: &Database) -> Result<usize> {
 
 fn index_single_file(db: &Database, path: &Path, lang: Language, full: bool) -> Result<bool> {
     let path_str = path.to_str().context("Non-UTF8 path")?;
-    let source =
-        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path_str))?;
-    let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let (size, modified_ns) = read_file_metadata(path)?;
+    let existing = if full {
+        None
+    } else {
+        db.query_file_state(path_str)?
+    };
 
-    if !full {
-        if let Some(existing) = db.get_file_hash(path_str)? {
-            if existing == hash {
-                return Ok(false);
-            }
-        }
+    if existing
+        .as_ref()
+        .is_some_and(|state| state.size == Some(size) && state.modified_ns == Some(modified_ns))
+    {
+        return Ok(false);
     }
 
-    let file_id = db.upsert_file(path_str, &hash, lang.as_str())?;
-    db.clear_file_data(file_id)?;
+    let source =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {path_str}"))?;
+    let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let file_id = db.upsert_file_with_metadata(
+        path_str,
+        &hash,
+        lang.as_str(),
+        Some(size),
+        Some(modified_ns),
+    )?;
 
+    if existing.is_some_and(|state| state.hash == hash) {
+        return Ok(false);
+    }
+
+    db.clear_file_data(file_id)?;
     let result = parser::parse_file(&source, lang)?;
     store_parse_result(db, file_id, &result)?;
 
     Ok(true)
+}
+
+pub(crate) fn read_file_metadata(path: &Path) -> Result<(i64, i64)> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
+    let size = i64::try_from(metadata.len())
+        .with_context(|| format!("File is too large to index: {}", path.display()))?;
+    let modified_ns = metadata
+        .modified()
+        .with_context(|| format!("Failed to read modification time for {}", path.display()))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .with_context(|| format!("Modification time predates Unix epoch: {}", path.display()))?
+        .as_nanos();
+    let modified_ns = i64::try_from(modified_ns)
+        .with_context(|| format!("Modification time is out of range: {}", path.display()))?;
+    Ok((size, modified_ns))
 }
 
 pub fn store_parse_result(
@@ -236,6 +267,34 @@ Rectangle {
         let stats2 = index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
         assert_eq!(stats2.indexed, 0);
         assert_eq!(stats2.skipped, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_skip_unchanged_file_without_reading_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.py");
+        fs::write(&file, "def greet():\n    pass\n").unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&file, "def greet():\n    pass\n").unwrap();
+        let metadata_refresh = index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+        assert_eq!(metadata_refresh.skipped, 1);
+
+        let original_permissions = fs::metadata(&file).unwrap().permissions();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let stats = index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+
+        fs::set_permissions(&file, original_permissions).unwrap();
+        assert_eq!(stats.indexed, 0);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.errors, 0);
     }
 
     #[test]

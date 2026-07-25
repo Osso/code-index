@@ -128,19 +128,24 @@ fn changed_file_language(path: &Path) -> Option<Language> {
 
 fn reindex_file(db: &Database, path: &Path, lang: Language) -> Result<bool> {
     let path_str = path.to_str().context("Non-UTF8 path")?;
+    let (size, modified_ns) = indexer::read_file_metadata(path)?;
     let source =
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {path_str}"))?;
     let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let existing_hash = db.get_file_hash(path_str)?;
+    let file_id = db.upsert_file_with_metadata(
+        path_str,
+        &hash,
+        lang.as_str(),
+        Some(size),
+        Some(modified_ns),
+    )?;
 
-    if let Some(existing) = db.get_file_hash(path_str)? {
-        if existing == hash {
-            return Ok(false);
-        }
+    if existing_hash.is_some_and(|existing| existing == hash) {
+        return Ok(false);
     }
 
-    let file_id = db.upsert_file(path_str, &hash, lang.as_str())?;
     db.clear_file_data(file_id)?;
-
     let result = crate::parser::parse_file(&source, lang)?;
     indexer::store_parse_result(db, file_id, &result)?;
 
