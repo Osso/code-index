@@ -184,6 +184,26 @@ mod tests {
         assert_eq!(stats.1, 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn handle_changed_file_records_metadata_for_directory_scans() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let path = tmp.path().join("lib.rs");
+        std::fs::write(&path, "pub fn helper() {}\n").unwrap();
+        assert!(handle_changed_file(&db, &path).unwrap());
+
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let stats = indexer::index_directory(&db, tmp.path().to_str().unwrap(), false).unwrap();
+        std::fs::set_permissions(&path, original_permissions).unwrap();
+
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.errors, 0);
+    }
+
     #[test]
     fn handle_changed_file_ignores_removed_and_unsupported_paths() {
         let tmp = tempfile::TempDir::new().unwrap();
