@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Import, Reference, Symbol};
 
@@ -175,16 +175,15 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare("SELECT hash, size, modified_ns FROM files WHERE path = ?1")?;
-        let result = stmt
-            .query_row(params![path], |row| {
-                Ok(FileState {
-                    hash: row.get(0)?,
-                    size: row.get(1)?,
-                    modified_ns: row.get(2)?,
-                })
+        stmt.query_row(params![path], |row| {
+            Ok(FileState {
+                hash: row.get(0)?,
+                size: row.get(1)?,
+                modified_ns: row.get(2)?,
             })
-            .ok();
-        Ok(result)
+        })
+        .optional()
+        .context("Failed to query file state")
     }
 
     /// Get file hash to check if re-indexing is needed.
@@ -361,6 +360,39 @@ mod tests {
         assert_eq!(files, 0);
         assert_eq!(symbols, 0);
         assert_eq!(refs, 0);
+    }
+
+    #[test]
+    fn test_migrate_file_metadata_columns() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                hash TEXT NOT NULL,
+                lang TEXT NOT NULL,
+                indexed_at INTEGER NOT NULL
+            );
+            INSERT INTO files (path, hash, lang, indexed_at)
+            VALUES ('/legacy.rs', 'legacy-hash', 'rust', 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        let legacy = db.query_file_state("/legacy.rs").unwrap().unwrap();
+        assert_eq!(legacy.hash, "legacy-hash");
+        assert_eq!(legacy.size, None);
+        assert_eq!(legacy.modified_ns, None);
+
+        db.upsert_file_with_metadata("/legacy.rs", "new-hash", "rust", Some(12), Some(34))
+            .unwrap();
+        let updated = db.query_file_state("/legacy.rs").unwrap().unwrap();
+        assert_eq!(updated.hash, "new-hash");
+        assert_eq!(updated.size, Some(12));
+        assert_eq!(updated.modified_ns, Some(34));
     }
 
     #[test]
