@@ -450,8 +450,9 @@ fn cmd_callers(
 
 fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)> {
     let project_dir = project::resolve_project_dir(path)?;
-    let db = db::Database::open(&project::db_path(&project_dir))?;
-    refresh_project_index(&db, &project_dir)?;
+    let database_path = project::db_path(&project_dir);
+    let db = db::Database::open(&database_path)?;
+    refresh_project_index(&db, &project_dir, &database_path)?;
     Ok((project_dir, db))
 }
 
@@ -461,7 +462,16 @@ fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)
 const REFRESH_INTERVAL_SECS: u64 = 3600;
 const LAST_REFRESH_KEY: &str = "last_refresh";
 
-fn refresh_project_index(db: &db::Database, project_dir: &Path) -> Result<()> {
+fn refresh_project_index(db: &db::Database, project_dir: &Path, database_path: &str) -> Result<()> {
+    if !refresh_due(db, unix_now())? {
+        return Ok(());
+    }
+
+    let Some(_refresh_guard) = db::RefreshGuard::try_acquire(database_path)? else {
+        // WAL readers can use the last committed index while the owner refreshes.
+        return Ok(());
+    };
+
     let now = unix_now();
     if !refresh_due(db, now)? {
         return Ok(());

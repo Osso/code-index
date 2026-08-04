@@ -1,7 +1,13 @@
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Import, Reference, Symbol};
+
+const MIGRATION_LOCK_PURPOSE: &str = "migration";
+const REFRESH_LOCK_PURPOSE: &str = "refresh";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -68,6 +74,71 @@ pub struct Database {
     conn: Connection,
 }
 
+struct AdvisoryDatabaseLock {
+    _file: File,
+}
+
+pub(crate) struct RefreshGuard {
+    _lock: AdvisoryDatabaseLock,
+}
+
+impl AdvisoryDatabaseLock {
+    fn acquire(database_path: &str, purpose: &str) -> Result<Self> {
+        let file = open_lock_file(database_path, purpose)?;
+        file.lock().with_context(|| {
+            format!("Failed to acquire {purpose} database lock for {database_path}")
+        })?;
+        Ok(Self { _file: file })
+    }
+
+    fn try_acquire(database_path: &str, purpose: &str) -> Result<Option<Self>> {
+        let file = open_lock_file(database_path, purpose)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error).with_context(|| {
+                format!("Failed to try acquiring {purpose} database lock for {database_path}")
+            }),
+        }
+    }
+}
+
+impl RefreshGuard {
+    pub(crate) fn try_acquire(database_path: &str) -> Result<Option<Self>> {
+        let lock = AdvisoryDatabaseLock::try_acquire(database_path, REFRESH_LOCK_PURPOSE)?;
+        Ok(lock.map(|lock| Self { _lock: lock }))
+    }
+}
+
+fn open_lock_file(database_path: &str, purpose: &str) -> Result<File> {
+    let lock_path = database_lock_path(database_path, purpose)?;
+    let lock_dir = lock_path
+        .parent()
+        .context("Database lock path has no parent directory")?;
+    std::fs::create_dir_all(lock_dir).with_context(|| {
+        format!(
+            "Failed to create database lock directory: {}",
+            lock_dir.display()
+        )
+    })?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open database lock: {}", lock_path.display()))
+}
+
+pub(crate) fn database_lock_path(database_path: &str, purpose: &str) -> Result<PathBuf> {
+    let lock_dir = dirs::cache_dir()
+        .context("Cannot determine cache directory for database locks")?
+        .join("code-index")
+        .join("locks");
+    let digest = blake3::hash(database_path.as_bytes()).to_hex();
+    Ok(lock_dir.join(format!("{digest}-{purpose}.lock")))
+}
+
 pub struct FileState {
     pub hash: String,
     pub size: Option<i64>,
@@ -76,6 +147,12 @@ pub struct FileState {
 
 impl Database {
     pub fn open(path: &str) -> Result<Self> {
+        // Serialize schema changes without holding this lock during indexing.
+        let _migration_lock = AdvisoryDatabaseLock::acquire(path, MIGRATION_LOCK_PURPOSE)?;
+        Self::open_and_migrate(path)
+    }
+
+    fn open_and_migrate(path: &str) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open database")?;
         // busy_timeout must be set before WAL/migration: concurrent writers (the
         // watcher daemon plus a CLI invocation) otherwise fail instantly with
