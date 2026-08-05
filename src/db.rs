@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::model::{Import, Reference, Symbol};
 
 const MIGRATION_LOCK_PURPOSE: &str = "migration";
-const REFRESH_LOCK_PURPOSE: &str = "refresh";
+const INDEX_LOCK_PURPOSE: &str = "index";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -72,14 +72,15 @@ CREATE TABLE IF NOT EXISTS meta (
 
 pub struct Database {
     conn: Connection,
+    lock_key: Option<String>,
 }
 
 struct AdvisoryDatabaseLock {
     _file: File,
 }
 
-pub(crate) struct RefreshGuard {
-    _lock: AdvisoryDatabaseLock,
+pub(crate) struct IndexGuard {
+    _lock: Option<AdvisoryDatabaseLock>,
 }
 
 impl AdvisoryDatabaseLock {
@@ -100,13 +101,6 @@ impl AdvisoryDatabaseLock {
                 format!("Failed to try acquiring {purpose} database lock for {database_path}")
             }),
         }
-    }
-}
-
-impl RefreshGuard {
-    pub(crate) fn try_acquire(database_path: &str) -> Result<Option<Self>> {
-        let lock = AdvisoryDatabaseLock::try_acquire(database_path, REFRESH_LOCK_PURPOSE)?;
-        Ok(lock.map(|lock| Self { _lock: lock }))
     }
 }
 
@@ -146,6 +140,28 @@ pub struct FileState {
 }
 
 impl Database {
+    pub(crate) fn acquire_index_guard(&self) -> Result<IndexGuard> {
+        let lock = match &self.lock_key {
+            Some(database_path) => Some(AdvisoryDatabaseLock::acquire(
+                database_path,
+                INDEX_LOCK_PURPOSE,
+            )?),
+            None => None,
+        };
+        Ok(IndexGuard { _lock: lock })
+    }
+
+    pub(crate) fn try_acquire_index_guard(&self) -> Result<Option<IndexGuard>> {
+        let Some(database_path) = &self.lock_key else {
+            return Ok(Some(IndexGuard { _lock: None }));
+        };
+        let Some(lock) = AdvisoryDatabaseLock::try_acquire(database_path, INDEX_LOCK_PURPOSE)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(IndexGuard { _lock: Some(lock) }))
+    }
+
     pub fn open(path: &str) -> Result<Self> {
         // Serialize schema changes without holding this lock during indexing.
         let _migration_lock = AdvisoryDatabaseLock::acquire(path, MIGRATION_LOCK_PURPOSE)?;
@@ -161,7 +177,10 @@ impl Database {
             .context("Failed to set busy_timeout")?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .context("Failed to set pragmas")?;
-        let db = Self { conn };
+        let db = Self {
+            conn,
+            lock_key: Some(path.to_owned()),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -171,7 +190,10 @@ impl Database {
         let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .context("Failed to set pragmas")?;
-        let db = Self { conn };
+        let db = Self {
+            conn,
+            lock_key: None,
+        };
         db.migrate()?;
         Ok(db)
     }

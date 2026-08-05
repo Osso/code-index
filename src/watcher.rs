@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 
-use crate::db::Database;
+use crate::db::{Database, IndexGuard};
 use crate::indexer;
 use crate::model::Language;
 use crate::resolver;
@@ -19,14 +19,7 @@ pub fn watch(db_path: &str, dir: &str) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("Cannot resolve path: {dir}"))?;
 
-    // Initial full index
-    {
-        let db = Database::open(db_path)?;
-        let stats = indexer::index_directory(&db, dir.to_str().unwrap(), false)?;
-        log::info!("{stats}");
-        let resolved = resolver::resolve_references(&db)?;
-        log::info!("{resolved}");
-    }
+    index_initial_directory(db_path, &dir)?;
 
     let (tx, rx) = mpsc::channel::<DebounceEventResult>();
 
@@ -39,7 +32,11 @@ pub fn watch(db_path: &str, dir: &str) -> Result<()> {
         .with_context(|| format!("Failed to watch {}", dir.display()))?;
 
     log::info!("Watching {} for changes...", dir.display());
+    process_watch_events(db_path, rx);
+    Ok(())
+}
 
+fn process_watch_events(db_path: &str, rx: mpsc::Receiver<DebounceEventResult>) {
     for result in rx {
         match result {
             Ok(events) => {
@@ -51,8 +48,22 @@ pub fn watch(db_path: &str, dir: &str) -> Result<()> {
             Err(e) => log::error!("Watch error: {e:?}"),
         }
     }
+}
 
+fn index_initial_directory(db_path: &str, dir: &Path) -> Result<()> {
+    let (db, index_guard) = open_indexing_database(db_path)?;
+    let stats =
+        indexer::index_directory_with_guard(&db, dir.to_str().unwrap(), false, &index_guard)?;
+    log::info!("{stats}");
+    let resolved = resolver::resolve_references(&db)?;
+    log::info!("{resolved}");
     Ok(())
+}
+
+fn open_indexing_database(db_path: &str) -> Result<(Database, IndexGuard)> {
+    let db = Database::open(db_path)?;
+    let index_guard = db.acquire_index_guard()?;
+    Ok((db, index_guard))
 }
 
 fn collect_changed_files(events: &[notify_debouncer_mini::DebouncedEvent]) -> Vec<PathBuf> {
@@ -78,10 +89,10 @@ fn collect_changed_files(events: &[notify_debouncer_mini::DebouncedEvent]) -> Ve
 }
 
 fn handle_changes(db_path: &str, files: &[PathBuf]) {
-    let db = match Database::open(db_path) {
-        Ok(db) => db,
+    let (db, _index_guard) = match open_indexing_database(db_path) {
+        Ok(database) => database,
         Err(e) => {
-            log::error!("Failed to open database: {e}");
+            log::error!("Failed to open indexing database: {e}");
             return;
         }
     };

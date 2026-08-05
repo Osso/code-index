@@ -124,7 +124,7 @@ fn open_refreshed_database_reads_existing_index_while_another_refresh_is_active(
     db.set_meta(LAST_REFRESH_KEY, "0").unwrap();
     drop(db);
 
-    let refresh_lock = acquire_database_lock(&database_path, "refresh");
+    let index_lock = acquire_database_lock(&database_path, "index");
     let writer = rusqlite::Connection::open(&database_path).unwrap();
     writer
         .execute_batch(
@@ -149,7 +149,7 @@ fn open_refreshed_database_reads_existing_index_while_another_refresh_is_active(
 
     let result = result_rx.recv_timeout(Duration::from_secs(3));
     writer.execute_batch("ROLLBACK").unwrap();
-    refresh_lock.unlock().unwrap();
+    index_lock.unlock().unwrap();
     query_thread.join().unwrap();
 
     let symbols = result.expect("read query joined the active refresh instead of using the index");

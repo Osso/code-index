@@ -147,7 +147,16 @@ impl CodeIndexService {
             Ok(db) => db,
             Err(e) => return e,
         };
-        match indexer::index_directory(&db, &p.path, p.full.unwrap_or(false)) {
+        let index_guard = match db.acquire_index_guard() {
+            Ok(guard) => guard,
+            Err(e) => return format!("Indexing failed: {e}"),
+        };
+        match indexer::index_directory_with_guard(
+            &db,
+            &p.path,
+            p.full.unwrap_or(false),
+            &index_guard,
+        ) {
             Ok(result) => {
                 let resolve = resolver::resolve_references(&db);
                 let resolve_msg = match resolve {

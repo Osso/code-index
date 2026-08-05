@@ -407,7 +407,8 @@ fn cmd_index(path: Option<&str>, full: bool) -> Result<()> {
     let db_path = project::db_path(&project_dir);
     let dir_str = project_dir.to_string_lossy();
     let db = db::Database::open(&db_path)?;
-    let stats = indexer::index_directory(&db, &dir_str, full)?;
+    let index_guard = db.acquire_index_guard()?;
+    let stats = indexer::index_directory_with_guard(&db, &dir_str, full, &index_guard)?;
     println!("{stats}");
     let resolve = resolver::resolve_references(&db)?;
     println!("{resolve}");
@@ -452,7 +453,7 @@ fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)
     let project_dir = project::resolve_project_dir(path)?;
     let database_path = project::db_path(&project_dir);
     let db = db::Database::open(&database_path)?;
-    refresh_project_index(&db, &project_dir, &database_path)?;
+    refresh_project_index(&db, &project_dir)?;
     Ok((project_dir, db))
 }
 
@@ -462,12 +463,12 @@ fn open_refreshed_database(path: Option<&str>) -> Result<(PathBuf, db::Database)
 const REFRESH_INTERVAL_SECS: u64 = 3600;
 const LAST_REFRESH_KEY: &str = "last_refresh";
 
-fn refresh_project_index(db: &db::Database, project_dir: &Path, database_path: &str) -> Result<()> {
+fn refresh_project_index(db: &db::Database, project_dir: &Path) -> Result<()> {
     if !refresh_due(db, unix_now())? {
         return Ok(());
     }
 
-    let Some(_refresh_guard) = db::RefreshGuard::try_acquire(database_path)? else {
+    let Some(index_guard) = db.try_acquire_index_guard()? else {
         // WAL readers can use the last committed index while the owner refreshes.
         return Ok(());
     };
@@ -478,7 +479,7 @@ fn refresh_project_index(db: &db::Database, project_dir: &Path, database_path: &
     }
 
     let dir_str = project_dir.to_string_lossy();
-    let stats = indexer::index_directory(db, &dir_str, false)?;
+    let stats = indexer::index_directory_with_guard(db, &dir_str, false, &index_guard)?;
     // Only the resolution pass is costly on large repos, and it is pointless
     // when no file changed — the prior resolution is still valid.
     if stats.changed_graph() {
