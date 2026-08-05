@@ -31,6 +31,7 @@ struct PreparedFileUpdate {
 
 /// Index all supported files under a directory.
 /// If `full` is true, re-indexes everything regardless of hash.
+#[cfg(test)]
 pub fn index_directory(db: &Database, dir: &str, full: bool) -> Result<IndexStats> {
     let index_guard = db.acquire_index_guard()?;
     index_directory_with_guard(db, dir, full, &index_guard)
