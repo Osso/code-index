@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{CallInfo, StoredSymbol};
+use crate::test_support::CWD_LOCK;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::sync::mpsc;
@@ -50,6 +51,51 @@ fn outline_file_args_include_definition_and_unique_callers() {
     let files = build_outline_file_args(Path::new("/repo"), &definitions, &callers);
 
     assert_eq!(files, vec!["/repo/src/base.php", "/repo/src/releases.php"]);
+}
+
+#[test]
+fn open_refreshed_database_stops_at_git_boundary_before_registered_parent() {
+    let _guard = CWD_LOCK.lock().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+    let registered_parent = tmp.path().join("registered-parent");
+    let git_root = registered_parent.join("nested-worktree");
+    let nested = git_root.join("src").join("deep");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(git_root.join(".git"), "gitdir: /tmp/example\n").unwrap();
+    std::fs::write(
+        git_root.join("src").join("lib.rs"),
+        "fn git_boundary_symbol() {}\n",
+    )
+    .unwrap();
+
+    let old_cwd = std::env::current_dir().unwrap();
+    let old_config_home = std::env::var_os("XDG_CONFIG_HOME");
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    }
+    let result = (|| -> anyhow::Result<_> {
+        config::add_project("registered-parent", &registered_parent)?;
+        std::env::set_current_dir(&nested)?;
+        let (project_dir, db) = open_refreshed_database(None)?;
+        let symbols = query::find_symbols(&db, "git_boundary_symbol", None, None)?;
+        let symbol_names: Vec<String> = symbols.into_iter().map(|symbol| symbol.name).collect();
+        Ok((project_dir, symbol_names))
+    })();
+
+    std::env::set_current_dir(old_cwd).unwrap();
+    unsafe {
+        match old_config_home {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    let (project_dir, symbol_names) = result.unwrap();
+    assert_eq!(project_dir, git_root.canonicalize().unwrap());
+    assert!(git_root.join(".code-index.db").exists());
+    assert!(!registered_parent.join(".code-index.db").exists());
+    assert_eq!(symbol_names, vec!["git_boundary_symbol"]);
 }
 
 #[test]

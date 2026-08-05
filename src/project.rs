@@ -15,18 +15,36 @@ pub fn resolve_project_dir(explicit_path: Option<&str>) -> Result<PathBuf> {
     }
 
     let cwd = std::env::current_dir().context("Cannot determine current directory")?;
+    let git_root = find_git_ancestor(&cwd);
 
-    // Check registered projects (longest prefix match)
-    if let Some(name) = config::find_project_for_path(&cwd)? {
-        let config = config::load()?;
-        if let Some(entry) = config.projects.get(&name) {
-            return Path::new(&entry.path).canonicalize().with_context(|| {
-                format!("Cannot resolve registered project path: {}", entry.path)
-            });
-        }
+    if let Some(project_dir) = find_registered_project(&cwd, git_root.as_deref())? {
+        return Ok(project_dir);
     }
 
     find_project_ancestor(&cwd).unwrap_or(Ok(cwd))
+}
+
+fn find_registered_project(cwd: &Path, git_root: Option<&Path>) -> Result<Option<PathBuf>> {
+    let Some(name) = config::find_project_for_path(cwd)? else {
+        return Ok(None);
+    };
+    let config = config::load()?;
+    let Some(entry) = config.projects.get(&name) else {
+        return Ok(None);
+    };
+    let project_dir = Path::new(&entry.path)
+        .canonicalize()
+        .with_context(|| format!("Cannot resolve registered project path: {}", entry.path))?;
+    if git_root.is_some_and(|root| !project_dir.starts_with(root)) {
+        return Ok(None);
+    }
+    Ok(Some(project_dir))
+}
+
+fn find_git_ancestor(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 fn find_project_ancestor(cwd: &Path) -> Option<Result<PathBuf>> {
