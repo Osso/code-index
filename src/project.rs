@@ -26,13 +26,13 @@ pub fn resolve_project_dir(explicit_path: Option<&str>) -> Result<PathBuf> {
         }
     }
 
-    find_indexed_ancestor(&cwd).unwrap_or(Ok(cwd))
+    find_project_ancestor(&cwd).unwrap_or(Ok(cwd))
 }
 
-fn find_indexed_ancestor(cwd: &Path) -> Option<Result<PathBuf>> {
+fn find_project_ancestor(cwd: &Path) -> Option<Result<PathBuf>> {
     let mut dir = cwd;
     loop {
-        if dir.join(DB_FILENAME).exists() {
+        if dir.join(DB_FILENAME).exists() || dir.join(".git").exists() {
             return Some(Ok(dir.to_path_buf()));
         }
         match dir.parent() {
@@ -94,6 +94,25 @@ mod tests {
 
         std::env::set_current_dir(old_cwd).unwrap();
         assert_eq!(resolved, tmp.path());
+    }
+
+    #[test]
+    fn git_worktree_root_wins_over_higher_indexed_ancestor() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let indexed_parent = tmp.path().join("home");
+        let worktree = indexed_parent.join("worktree");
+        let nested = worktree.join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(indexed_parent.join(DB_FILENAME), "").unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: /tmp/example\n").unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&nested).unwrap();
+
+        let resolved = resolve_project_dir(None).unwrap();
+
+        std::env::set_current_dir(old_cwd).unwrap();
+        assert_eq!(resolved, worktree);
     }
 
     #[test]
